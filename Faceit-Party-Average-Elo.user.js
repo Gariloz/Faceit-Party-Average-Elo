@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Faceit Party Average Elo
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  Считает среднее ELO всех игроков в пати (сумма ELO / количество игроков)
 // @author       Gariloz
 // @match        https://*.faceit.com/*
@@ -476,6 +476,7 @@
                         flex-direction: column;
                         width: max-content;
                         margin-left: auto;
+                        pointer-events: none; /* чтобы не было никаких тултипов/ховеров */
                     `;
 
                     // Линия сверху (для визуальной рамки)
@@ -638,6 +639,14 @@
                     }
                 }
 
+                // На всякий случай всегда убираем title, чтобы не было подсказки
+                infoElement.removeAttribute('title');
+
+                // Форсим, чтобы блок всегда был последним элементом в своём footer (справа)
+                if (infoElement.parentElement && infoElement.parentElement.lastElementChild !== infoElement) {
+                    infoElement.parentElement.appendChild(infoElement);
+                }
+
                 if (!result) {
                     titleElement.textContent = 'Среднее ELO лобби';
                     valueNumberElement.textContent = 'н/д';
@@ -663,7 +672,8 @@
                     if (plusNumberElement) plusNumberElement.textContent = plus100;
                     if (plusPlayersElement) plusPlayersElement.textContent = `(${result.count} игроков)`;
                     infoElement.style.opacity = '1';
-                    infoElement.title = `ELO игроков: ${result.values.map(v => v.toLocaleString('ru-RU')).join(', ')}\nСреднее: ${baseAvg}\nСреднее +100: ${plus100}`;
+                    // Отключаем всплывающую подсказку, чтобы не мешала
+                    infoElement.removeAttribute('title');
                 }
             });
         } catch (error) {
@@ -674,6 +684,16 @@
     // Отображение среднего ELO для текущей пати на главной странице (matchmaking)
     function updateMainPartyDisplay() {
         try {
+            // Работаем только на странице матчмейкинга
+            if (!window.location.pathname.includes('/matchmaking')) {
+                const old = document.querySelector('.faceit-mainparty-average-elo');
+                if (old && old.parentElement) {
+                    old.parentElement.removeChild(old);
+                }
+                mainPartyDisplayElement = null;
+                return;
+            }
+
             const container = findPartyContainer();
             if (!container) return;
 
@@ -714,6 +734,7 @@
                     width: max-content;
                     margin-left: auto;
                     order: 9999; /* всегда в самом конце flex-строки */
+                    pointer-events: none; /* чтобы не было никаких тултипов/ховеров */
                 `;
 
                 const topLine = document.createElement('div');
@@ -792,6 +813,11 @@
                     headerRow = partyControl;
                 }
 
+                const rowStyle = window.getComputedStyle(headerRow);
+                if (rowStyle.position === 'static') {
+                    headerRow.style.position = 'relative';
+                }
+
                 headerRow.appendChild(infoElement);
 
                 // Сохраняем для повторного использования
@@ -868,6 +894,9 @@
                     infoElement.appendChild(newPlusValueContainer);
                     infoElement.appendChild(newBottom);
                 }
+
+                // На всякий случай всегда убираем title, чтобы не было подсказки
+                infoElement.removeAttribute('title');
             }
 
             if (!result) {
@@ -895,7 +924,8 @@
                 if (plusNumberElement) plusNumberElement.textContent = plus100;
                 if (plusPlayersElement) plusPlayersElement.textContent = `(${result.count} игроков)`;
                 infoElement.style.opacity = '1';
-                infoElement.title = `ELO игроков: ${result.values.map(v => v.toLocaleString('ru-RU')).join(', ')}\nСреднее: ${baseAvg}\nСреднее +100: ${plus100}`;
+                // Отключаем всплывающую подсказку, чтобы не мешала
+                infoElement.removeAttribute('title');
             }
         } catch (error) {
             console.error('Faceit Party Average Elo: Error updating main party display', error);
