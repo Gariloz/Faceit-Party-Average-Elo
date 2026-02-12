@@ -142,6 +142,8 @@
     // === ПЕРЕМЕННЫЕ ===
     let displayElement = null;
     let updateInterval = null;
+    // Один глобальный блок для пати на странице матчмейкинга, чтобы не плодить дубли
+    let mainPartyDisplayElement = null;
 
     // === ОСНОВНЫЕ ФУНКЦИИ ===
     
@@ -435,6 +437,12 @@
     // Обновление надписей под лобби (список лобби в клубе)
     function updateLobbyDisplays() {
         try {
+            // На странице матчмейкинга используем отдельный блок справа,
+            // чтобы не было второго окна слева.
+            if (window.location.pathname.includes('/matchmaking')) {
+                return;
+            }
+
             const lobbyContainers = findLobbyContainers();
             if (!lobbyContainers || lobbyContainers.length === 0) {
                 return;
@@ -679,7 +687,10 @@
                 container.querySelector('[class*="styles__PartyControlContainer"]') ||
                 container;
 
-            let infoElement = partyControl.querySelector('.faceit-mainparty-average-elo');
+            // Используем один глобальный элемент, чтобы не плодить бесконечно новые дивы
+            let infoElement = mainPartyDisplayElement && document.body.contains(mainPartyDisplayElement)
+                ? mainPartyDisplayElement
+                : null;
             let titleElement;
             let valueNumberElement;
             let valuePlayersElement;
@@ -702,6 +713,7 @@
                     font-size: 14px;
                     width: max-content;
                     margin-left: auto;
+                    order: 9999; /* всегда в самом конце flex-строки */
                 `;
 
                 const topLine = document.createElement('div');
@@ -761,12 +773,33 @@
                 infoElement.appendChild(bottomLine);
 
                 // Вставляем сразу под названием пати/рядом с контролами
-                const headerRow =
+                // Пытаемся найти именно строку с карточками игроков,
+                // чтобы блок выглядел как в списке лобби.
+                let headerRow =
                     partyControl.querySelector('.PartyControl__TailContainer-sc-642823d5-2') ||
-                    partyControl.querySelector('.PartyControl__Holder-sc-642823d5-0') ||
-                    partyControl;
+                    partyControl.querySelector('.PartyControl__Holder-sc-642823d5-0');
+
+                if (!headerRow) {
+                    // Фолбэк: берем контейнер, в котором лежат карточки игроков
+                    const firstPlayerCard =
+                        container.querySelector('[class*="PlayerCardWrapper-sc-84becbd1-2"]') ||
+                        container.querySelector('[class*="PlayerCardWrapper"]') ||
+                        container.querySelector('[data-testid="playerCard"]');
+
+                    if (firstPlayerCard) {
+                        headerRow =
+                            firstPlayerCard.closest('[class*="CardContainer-sc-c9a9cc81-1"]') ||
+                            firstPlayerCard.closest('[class*="CardContainer"]') ||
+                            firstPlayerCard.parentElement || partyControl;
+                    } else {
+                        headerRow = partyControl;
+                    }
+                }
 
                 headerRow.appendChild(infoElement);
+
+                // Сохраняем для повторного использования
+                mainPartyDisplayElement = infoElement;
             } else {
                 titleElement = infoElement.querySelector('.faceit-mainparty-average-elo-title');
                 const valueContainer = infoElement.querySelector('.faceit-mainparty-average-elo-value');
