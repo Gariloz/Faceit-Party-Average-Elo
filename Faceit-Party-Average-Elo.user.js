@@ -772,28 +772,24 @@
                 infoElement.appendChild(plusValueContainer);
                 infoElement.appendChild(bottomLine);
 
-                // Вставляем сразу под названием пати/рядом с контролами
-                // Пытаемся найти именно строку с карточками игроков,
-                // чтобы блок выглядел как в списке лобби.
-                let headerRow =
-                    partyControl.querySelector('.PartyControl__TailContainer-sc-642823d5-2') ||
-                    partyControl.querySelector('.PartyControl__Holder-sc-642823d5-0');
+                // Вставляем блок в строку с карточками игроков,
+                // чтобы он выглядел так же, как в списке лобби.
+                let headerRow = null;
+                const firstPlayerCard =
+                    container.querySelector('[class*="PlayerCardWrapper-sc-84becbd1-2"]') ||
+                    container.querySelector('[class*="PlayerCardWrapper"]') ||
+                    container.querySelector('[data-testid="playerCard"]');
+
+                if (firstPlayerCard) {
+                    headerRow =
+                        firstPlayerCard.closest('[class*="CardContainer-sc-c9a9cc81-1"]') ||
+                        firstPlayerCard.closest('[class*="CardContainer"]') ||
+                        firstPlayerCard.parentElement;
+                }
 
                 if (!headerRow) {
-                    // Фолбэк: берем контейнер, в котором лежат карточки игроков
-                    const firstPlayerCard =
-                        container.querySelector('[class*="PlayerCardWrapper-sc-84becbd1-2"]') ||
-                        container.querySelector('[class*="PlayerCardWrapper"]') ||
-                        container.querySelector('[data-testid="playerCard"]');
-
-                    if (firstPlayerCard) {
-                        headerRow =
-                            firstPlayerCard.closest('[class*="CardContainer-sc-c9a9cc81-1"]') ||
-                            firstPlayerCard.closest('[class*="CardContainer"]') ||
-                            firstPlayerCard.parentElement || partyControl;
-                    } else {
-                        headerRow = partyControl;
-                    }
+                    // На всякий случай, если не нашли карточки, вешаем на PartyControl
+                    headerRow = partyControl;
                 }
 
                 headerRow.appendChild(infoElement);
