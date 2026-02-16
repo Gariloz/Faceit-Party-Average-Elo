@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Faceit Party Average Elo
 // @namespace    http://tampermonkey.net/
-// @version      1.6
+// @version      1.9
 // @description  Считает среднее ELO всех игроков в пати (сумма ELO / количество игроков)
 // @author       Gariloz
 // @match        https://*.faceit.com/*
@@ -21,7 +21,7 @@
         INIT_DELAY_ON_LOAD: 1000,           // Доп. задержка после window.load (мс)
         INIT_RETRY_DELAY: 500,              // Пауза между попытками найти пати (мс)
         INIT_MAX_ATTEMPTS: 30,              // Сколько попыток искать пати при старте
-        DOM_OBSERVER_DEBOUNCE: 500,         // Задержка перед реакцией на DOM (мс). Больше = меньше лагов
+        DOM_OBSERVER_DEBOUNCE: 150,         // Задержка перед реакцией на DOM (мс). Меньше = быстрее на SPA
 
         // === ОТОБРАЖЕНИЕ БЛОКОВ ELO (вкл/выкл) ===
         SHOW_LOBBY_ELO_BLOCKS: true,        // Показывать блоки ELO под лобби в клубах (true/false)
@@ -30,7 +30,7 @@
         // === РАЗНИЦА ELO: ПОРОГ И УВЕДОМЛЕНИЯ (все можно вкл/выкл) ===
         ELO_DIFF_WARNING_THRESHOLD: 800,     // Порог: при разнице выше — красный цвет и оповещения
         ELO_DIFF_NOTIFY_COOLDOWN_MS: 60000,  // Пауза между оповещениями (мс), чтобы не спамить
-        ELO_DIFF_NOTIFY_STABILITY_MS: 1000,  // Уведомлять только если высокая разница держится N мс (чтобы не спамить при первой неверной загрузке)
+        ELO_DIFF_NOTIFY_STABILITY_MS: 2000,  // Уведомлять только если высокая разница держится N мс (избегаем фейковых)
 
         NOTIFY_ON_HIGH_ELO_DIFF: true,      // Браузерное уведомление (true/false) — часто не работает
         NOTIFY_SOUND_ON_HIGH_ELO_DIFF: true, // Звуковое оповещение (true/false)
@@ -124,14 +124,16 @@
 
     // === СЕЛЕКТОРЫ ДЛЯ ПОИСКА ЭЛЕМЕНТОВ ===
     const SELECTORS = {
-        // Контейнер пати (более широкий поиск)
+        // Контейнер пати (широкий поиск; FACEIT часто меняет хеши в классах)
         PARTY_CONTAINER: [
             'section[class*="Container-sc-c9a9cc81-0"]',
             'section[class*="Container"]',
             'div[class*="CardContainer-sc-c9a9cc81-1"]',
             'div[class*="CardContainer"]',
             'div[class*="PartyControl"]',
-            '[class*="Party__"]'
+            '[class*="Party__"]',
+            '[data-testid*="party"]',
+            '[data-testid*="Party"]'
         ],
         
         // Карточки игроков (более точные селекторы)
@@ -172,10 +174,16 @@
     // Время последнего уведомления о высокой разнице эло (для кулдауна)
     let lastEloDiffNotifyTime = 0;
     const highEloDiffStartBySource = new Map();  // ключ: 'main' | container — когда впервые увидели высокую разницу
+    const lastNotifiedLobbyKeyBySource = new Map();  // уже уведомили для этого состава лобби — не спамить
     let lastPathnameForNotify = '';  // сброс оповещений при переходе на другую страницу
     // Кэш результатов для оптимизации — обновляем DOM только при изменении
     const lobbyResultCache = new WeakMap();
     let lastMainPartyResultKey = '';
+    const RENDER_POLL_MS = 150;        // Интервал агрессивного опроса когда блок не отрисован (мс)
+    const RENDER_POLL_MAX_MS = 30000;  // Макс. время опроса (30 сек)
+    let matchmakingRetryCount = 0;
+    let lobbyRetryCount = 0;
+    let aggressivePollingId = null;
 
     // Запросить разрешение на браузерные уведомления (нужно для показа уведомлений при большой разнице эло)
     function requestNotificationPermissionIfNeeded() {
@@ -187,10 +195,10 @@
     }
 
     // === ОСНОВНЫЕ ФУНКЦИИ ===
-
+    
     // Кастомное оповещение на странице (большой баннер по центру экрана)
     function showCustomEloDiffAlert(eloDiff) {
-        if (!CONFIG.CUSTOM_ALERT_ON_HIGH_ELO_DIFF || eloDiff == null) return;
+        if (!CONFIG.CUSTOM_ALERT_ON_HIGH_ELO_DIFF || eloDiff == null || eloDiff <= 0) return;
         const existing = document.getElementById('faceit-elo-diff-custom-alert');
         if (existing && existing.parentNode) existing.remove();
 
@@ -202,12 +210,15 @@
 
         const box = document.createElement('div');
         box.id = 'faceit-elo-diff-custom-alert';
+        box.setAttribute('data-faceit-elo-script', '1');
         box.style.cssText = `
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            z-index: 2147483647;
+            position: fixed !important;
+            top: 50% !important;
+            left: 50% !important;
+            transform: translate(-50%, -50%) !important;
+            z-index: 2147483647 !important;
+            visibility: visible !important;
+            display: flex !important;
             min-width: ${minWidth};
             max-width: 90vw;
             padding: ${padding};
@@ -220,7 +231,6 @@
             border-radius: 12px;
             box-shadow: 0 12px 48px rgba(0,0,0,0.5), 0 0 0 4px rgba(255,255,255,0.15);
             pointer-events: auto;
-            display: flex;
             align-items: center;
             justify-content: center;
             gap: 16px;
@@ -256,7 +266,15 @@
         let timer = null;
         if (duration > 0) timer = setTimeout(removeAlert, duration);
 
-        document.body.appendChild(box);
+        const appendAlert = () => {
+            if (!document.body) return;
+            try {
+                document.body.appendChild(box);
+            } catch (e) {
+                console.warn('Faceit Party Average Elo: Custom alert append failed', e);
+            }
+        };
+        appendAlert();
     }
 
     // Показать браузерное уведомление, если разница эло превышает порог (с кулдауном и настройкой вкл/выкл)
@@ -267,14 +285,19 @@
             lastPathnameForNotify = path;
             lastEloDiffNotifyTime = 0;
             highEloDiffStartBySource.clear();
+            lastNotifiedLobbyKeyBySource.clear();
         }
+        const lobbyKey = result ? `${result.average}-${result.count}-${result.eloDiff}` : '';
+        if (lobbyKey && lastNotifiedLobbyKeyBySource.get(sourceKey) === lobbyKey) return;  // лобби не менялось — не спамить
         const wantNotify = CONFIG.NOTIFY_ON_HIGH_ELO_DIFF;
         const wantSound = CONFIG.NOTIFY_SOUND_ON_HIGH_ELO_DIFF;
         const wantCustomAlert = CONFIG.CUSTOM_ALERT_ON_HIGH_ELO_DIFF;
         if (!result || result.eloDiff == null || (!wantNotify && !wantSound && !wantCustomAlert)) return;
+        if (result.count < 2 || result.eloDiff <= 0) return;  // минимум 2 игрока, разница > 0 — избегаем фейковых
         const now = Date.now();
         if (result.eloDiff <= CONFIG.ELO_DIFF_WARNING_THRESHOLD) {
             highEloDiffStartBySource.delete(sourceKey);
+            lastNotifiedLobbyKeyBySource.delete(sourceKey);  // сброс — при следующем высоком diff уведомим снова
             return;
         }
         if (now - lastEloDiffNotifyTime < CONFIG.ELO_DIFF_NOTIFY_COOLDOWN_MS) return;
@@ -309,6 +332,7 @@
             }
             lastEloDiffNotifyTime = now;
             highEloDiffStartBySource.delete(sourceKey);
+            lastNotifiedLobbyKeyBySource.set(sourceKey, lobbyKey);
         };
 
         if (wantNotify && typeof Notification !== 'undefined') {
@@ -327,56 +351,71 @@
         }
     }
     
-    // Поиск контейнера пати (ищем по всей странице)
+    // Поиск контейнера пати (ищем по всей странице). Возвращает контейнер даже без ELO — покажем "н/д" до загрузки
     function findPartyContainer() {
-        // Сначала ищем по точным селекторам
+        // 1) Строгий поиск: контейнер + карточки с ELO
         for (const selector of SELECTORS.PARTY_CONTAINER) {
             try {
                 const containers = document.querySelectorAll(selector);
                 for (const container of containers) {
-                    // Проверяем, есть ли внутри карточки игроков с ELO
+                    if (!container || !container.isConnected) continue;
                     for (const cardSelector of SELECTORS.PLAYER_CARDS) {
                         const playerCards = container.querySelectorAll(cardSelector);
                         if (playerCards.length > 0) {
-                            // Проверяем, что хотя бы одна карточка имеет ELO
                             for (const card of playerCards) {
-                                if (extractEloFromCard(card) !== null) {
-                                    return container;
-                                }
+                                if (extractEloFromCard(card) !== null) return container;
                             }
                         }
                     }
                 }
-            } catch (e) {
-                continue;
-            }
+            } catch (e) { continue; }
         }
-        
-        // Если не нашли по контейнеру, ищем карточки напрямую по всей странице
+        // 2) Карточки с ELO по всей странице
         for (const cardSelector of SELECTORS.PLAYER_CARDS) {
             try {
                 const cards = document.querySelectorAll(cardSelector);
                 if (cards.length > 0) {
-                    // Проверяем, что хотя бы одна карточка имеет ELO
                     for (const card of cards) {
-                        if (extractEloFromCard(card) !== null) {
-                            // Возвращаем родительский контейнер
-                            let parent = card.parentElement;
-                            while (parent && parent !== document.body) {
-                                if (parent.tagName === 'SECTION' || parent.classList.toString().includes('Container')) {
-                                    return parent;
-                                }
-                                parent = parent.parentElement;
-                            }
-                            return card.closest('section') || card.closest('div[class*="Container"]') || document.body;
+                        if (extractEloFromCard(card) !== null && card.isConnected) {
+                            const parent = card.closest('section') || card.closest('div[class*="Container"]') || card.closest('div[class*="PartyControl"]') || card.closest('div[class*="Party"]') || document.body;
+                            if (parent && parent !== document.body) return parent;
                         }
                     }
                 }
-            } catch (e) {
-                continue;
-            }
+            } catch (e) { continue; }
         }
-        
+        // 3) Релаксированный: контейнер с карточками по структуре (даже без ELO) — отрисуем блок, потом обновим
+        for (const selector of SELECTORS.PARTY_CONTAINER) {
+            try {
+                const containers = document.querySelectorAll(selector);
+                for (const container of containers) {
+                    if (!container || !container.isConnected) continue;
+                    for (const cardSelector of SELECTORS.PLAYER_CARDS) {
+                        const playerCards = container.querySelectorAll(cardSelector);
+                        if (playerCards.length > 0) return container;
+                    }
+                }
+            } catch (e) { continue; }
+        }
+        for (const cardSelector of SELECTORS.PLAYER_CARDS) {
+            try {
+                const anyCards = document.querySelectorAll(cardSelector);
+                if (anyCards.length > 0 && anyCards[0].isConnected) {
+                    const parent = anyCards[0].closest('section') || anyCards[0].closest('div[class*="Container"]') || anyCards[0].closest('div[class*="Party"]');
+                    if (parent && parent !== document.body) return parent;
+                }
+            } catch (e) { continue; }
+        }
+        // 4) Matchmaking-специфично: ищем "Invite players" или структуру пати на странице матчмейкинга
+        if (window.location.pathname.includes('/matchmaking')) {
+            const inviteEl = document.querySelector('[data-testid="Invite players"]');
+            if (inviteEl && inviteEl.isConnected) {
+                const parent = inviteEl.closest('section') || inviteEl.closest('div[class*="Container"]') || inviteEl.closest('div[class*="Party"]') || inviteEl.closest('div[class*="Card"]') || inviteEl.parentElement?.parentElement;
+                if (parent && parent !== document.body) return parent;
+            }
+            const partyControl = document.querySelector('[class*="PartyControl"]') || document.querySelector('[class*="Party__"]');
+            if (partyControl && partyControl.isConnected) return partyControl;
+        }
         return null;
     }
 
@@ -467,15 +506,15 @@
     // чтобы количество игроков не удваивалось (6 вместо 3, 10 вместо 5 и т.п.).
     function calculateAverageEloForCards(playerCards) {
         if (!playerCards || playerCards.length === 0) {
-            return null;
-        }
+                return null;
+            }
 
-        const eloValues = [];
+            const eloValues = [];
         const seenPlayers = new Set(); // ключи вида "nickname#elo"
 
-        playerCards.forEach(card => {
-            try {
-                const elo = extractEloFromCard(card);
+            playerCards.forEach(card => {
+                try {
+                    const elo = extractEloFromCard(card);
                 if (elo === null || elo <= 0) return;
 
                 // Пытаемся получить никнейм игрока
@@ -495,10 +534,10 @@
                 seenPlayers.add(key);
 
                 eloValues.push(elo);
-            } catch (e) {
-                // Игнорируем ошибки при извлечении ELO из одной карточки
-            }
-        });
+                } catch (e) {
+                    // Игнорируем ошибки при извлечении ELO из одной карточки
+                }
+            });
 
             if (eloValues.length === 0) {
                 return null;
@@ -566,13 +605,42 @@
         }
     }
 
-    // Полное обновление: display + блоки ELO + оповещения (вызывается из setInterval и MutationObserver)
+    let lastRunFullUpdatePathname = '';
+    let aggressivePollStartTime = 0;
+
+    function stopAggressivePolling() {
+        if (aggressivePollingId) {
+            clearInterval(aggressivePollingId);
+            aggressivePollingId = null;
+        }
+    }
+
+    function startAggressivePollingIfNeeded() {
+        if (aggressivePollingId) return;
+        aggressivePollStartTime = Date.now();
+        aggressivePollingId = setInterval(() => {
+            if (Date.now() - aggressivePollStartTime > RENDER_POLL_MAX_MS) {
+                stopAggressivePolling();
+                return;
+            }
+            runFullUpdate();
+        }, RENDER_POLL_MS);
+    }
+
+    // Полное обновление: display + блоки ELO + оповещения
     function runFullUpdate() {
+        const path = window.location.pathname;
+        if (path !== lastRunFullUpdatePathname) {
+            lastRunFullUpdatePathname = path;
+            matchmakingRetryCount = 0;
+            lobbyRetryCount = 0;
+            stopAggressivePolling();
+        }
         updateDisplay();
-        if (CONFIG.SHOW_LOBBY_ELO_BLOCKS && !window.location.pathname.includes('/matchmaking')) {
+        if (CONFIG.SHOW_LOBBY_ELO_BLOCKS && !path.includes('/matchmaking')) {
             updateLobbyDisplays();
         }
-        if (CONFIG.SHOW_MAIN_PARTY_ELO_BLOCK && window.location.pathname.includes('/matchmaking')) {
+        if (CONFIG.SHOW_MAIN_PARTY_ELO_BLOCK && path.includes('/matchmaking')) {
             updateMainPartyDisplay();
         }
     }
@@ -638,8 +706,11 @@
 
             const lobbyContainers = findLobbyContainers();
             if (!lobbyContainers || lobbyContainers.length === 0) {
+                startAggressivePollingIfNeeded();
                 return;
             }
+            lobbyRetryCount = 0;
+            stopAggressivePolling();
 
             lobbyContainers.forEach(container => {
                 const playerCards = findPlayerCards(container);
@@ -929,7 +1000,12 @@
             }
 
             const container = findPartyContainer();
-            if (!container) return;
+            if (!container) {
+                startAggressivePollingIfNeeded();
+                return;
+            }
+            matchmakingRetryCount = 0;
+            stopAggressivePolling();
 
             const playerCards = findPlayerCards(container);
             const result = calculateAverageEloForCards(playerCards);
@@ -1274,6 +1350,60 @@
                 childList: true,
                 subtree: true,
                 attributes: false
+            });
+
+            // SPA-навигация: при back/forward сбрасываем всё и принудительно перерисовываем
+            window.addEventListener('popstate', () => {
+                mainPartyDisplayElement = null;
+                lastMainPartyResultKey = '';
+                lastRunFullUpdatePathname = '';
+                lastPathnameForNotify = '';
+                matchmakingRetryCount = 0;
+                lobbyRetryCount = 0;
+                stopAggressivePolling();
+                runFullUpdate();
+                startAggressivePollingIfNeeded();
+            });
+
+            // SPA часто использует pushState/replaceState — перехватываем и триггерим обновление + опрос
+            const origPush = history.pushState;
+            const origReplace = history.replaceState;
+            const onHistoryChange = () => {
+                mainPartyDisplayElement = null;
+                lastMainPartyResultKey = '';
+                lastRunFullUpdatePathname = '';
+                lastPathnameForNotify = '';
+                matchmakingRetryCount = 0;
+                lobbyRetryCount = 0;
+                stopAggressivePolling();
+                runFullUpdate();
+                startAggressivePollingIfNeeded();
+            };
+            history.pushState = function() { origPush.apply(this, arguments); onHistoryChange(); };
+            history.replaceState = function() { origReplace.apply(this, arguments); onHistoryChange(); };
+
+            // Back-Forward Cache: при возврате по кнопке «Назад» браузер восстанавливает страницу из кеша (bfcache).
+            // Страница НЕ перезагружается — JS «заморожен», DOM без наших блоков. Нужно принудительно перерисовать.
+            window.addEventListener('pageshow', (e) => {
+                if (!e.persisted) return;  // persisted = true только при восстановлении из bfcache
+                mainPartyDisplayElement = null;
+                lastMainPartyResultKey = '';
+                lastRunFullUpdatePathname = '';
+                lastPathnameForNotify = '';
+                matchmakingRetryCount = 0;
+                lobbyRetryCount = 0;
+                stopAggressivePolling();
+                runFullUpdate();
+                startAggressivePollingIfNeeded();
+            });
+
+            // Вкладка снова видна — обновляем (переход между вкладками, минимизация окна)
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'visible') {
+                    lastRunFullUpdatePathname = '';
+                    runFullUpdate();
+                    startAggressivePollingIfNeeded();
+                }
             });
         } catch (error) {
             console.error('Faceit Party Average Elo error:', error);

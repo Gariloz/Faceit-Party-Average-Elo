@@ -18,6 +18,7 @@
 * Optimized: caching, conditional updates, reduced intervals to avoid lag
 * Real-time: MutationObserver reacts to DOM changes (SPA navigation, player joins), values update immediately
 * Alerts reset when you navigate to another page and back — no stale cooldown
+* Reliable rendering when using browser back/forward (bfcache) and when switching tabs
 * Works on all FACEIT pages: `https://*.faceit.com/*`
 
 ## Installation
