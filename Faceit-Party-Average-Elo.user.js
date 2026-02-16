@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Faceit Party Average Elo
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.6
 // @description  Считает среднее ELO всех игроков в пати (сумма ELO / количество игроков)
 // @author       Gariloz
 // @match        https://*.faceit.com/*
@@ -15,13 +15,33 @@
 
     // === КОНФИГУРАЦИЯ (ВСЕ НАСТРОЙКИ ЗДЕСЬ) ===
     const CONFIG = {
-        // === ОБЩИЕ ТАЙМИНГИ ===
-        UPDATE_INTERVAL: 500,               // Как часто пересчитывать и обновлять все значения (мс)
-        INIT_DELAY_LOADED: 1000,            // Задержка перед первым init, если DOM уже готов (мс)
-        INIT_DELAY_ON_LOAD: 1000,           // Доп. задержка после события window.load (мс)
-        INIT_RETRY_DELAY: 500,              // Пауза между попытками найти пати и начать работу (мс)
-        INIT_MAX_ATTEMPTS: 30,              // Сколько всего попыток искать пати при старте
-        DOM_OBSERVER_DEBOUNCE: 300,         // Задержка перед реакцией на изменения DOM (мс)
+        // === ОБЩИЕ ТАЙМИНГИ (для производительности) ===
+        UPDATE_INTERVAL: 1000,              // Как часто пересчитывать (мс). Больше = меньше нагрузка (рекомендуется 1000)
+        INIT_DELAY_LOADED: 1000,            // Задержка перед первым init (мс)
+        INIT_DELAY_ON_LOAD: 1000,           // Доп. задержка после window.load (мс)
+        INIT_RETRY_DELAY: 500,              // Пауза между попытками найти пати (мс)
+        INIT_MAX_ATTEMPTS: 30,              // Сколько попыток искать пати при старте
+        DOM_OBSERVER_DEBOUNCE: 500,         // Задержка перед реакцией на DOM (мс). Больше = меньше лагов
+
+        // === ОТОБРАЖЕНИЕ БЛОКОВ ELO (вкл/выкл) ===
+        SHOW_LOBBY_ELO_BLOCKS: true,        // Показывать блоки ELO под лобби в клубах (true/false)
+        SHOW_MAIN_PARTY_ELO_BLOCK: true,    // Показывать блок ELO на странице matchmaking (true/false)
+
+        // === РАЗНИЦА ELO: ПОРОГ И УВЕДОМЛЕНИЯ (все можно вкл/выкл) ===
+        ELO_DIFF_WARNING_THRESHOLD: 800,     // Порог: при разнице выше — красный цвет и оповещения
+        ELO_DIFF_NOTIFY_COOLDOWN_MS: 60000,  // Пауза между оповещениями (мс), чтобы не спамить
+
+        NOTIFY_ON_HIGH_ELO_DIFF: true,      // Браузерное уведомление (true/false) — часто не работает
+        NOTIFY_SOUND_ON_HIGH_ELO_DIFF: true, // Звуковое оповещение (true/false)
+        ELO_DIFF_SOUND_URL: 'https://cdn-frontend.faceit-cdn.net/web-next/_next/static/media/radio-impact-swirl.mp3',
+
+        CUSTOM_ALERT_ON_HIGH_ELO_DIFF: true, // Текстовое оповещение на странице — баннер (true/false)
+        CUSTOM_ALERT_DURATION_MS: 8000,      // Сколько мс показывать баннер (0 = пока не закроют)
+        CUSTOM_ALERT: {                       // Оформление кастомного баннера
+            FONT_SIZE: '28px',                // Размер текста
+            MIN_WIDTH: '420px',               // Минимальная ширина
+            PADDING: '28px 36px'              // Отступы
+        },
 
         // === НАСТРОЙКИ ГЛОБАЛЬНОГО БЛОКА (сейчас почти не используется, но пусть будет в конфиге) ===
         GLOBAL_DISPLAY: {
@@ -63,7 +83,9 @@
             PLUS_VALUE_FONT_SIZE: '20px',     // Размер числа 711
             PLUS_VALUE_PLAYERS_FONT_SIZE: '10px', // Размер текста "(2 игроков)" под числом 711
 
-            LINE_MARGIN: '2px'                // Отступы между линиями и строками текста
+            LINE_MARGIN: '2px',               // Отступы между линиями и строками текста
+            DIFF_FONT_SIZE: '26px',           // Размер числа "Разница эло" (крупно сверху)
+            DIFF_LABEL_FONT_SIZE: '12px'     // Размер подписи "Разница эло"
         },
 
         // === ОФОРМЛЕНИЕ БЛОКА ПАТИ НА ГЛАВНОЙ (MATCHMAKING) ===
@@ -93,7 +115,9 @@
             PLUS_VALUE_FONT_SIZE: '20px',      // Размер числа 711
             PLUS_VALUE_PLAYERS_FONT_SIZE: '12px', // Размер текста "(2 игроков)" под числом 711
 
-            LINE_MARGIN: '2px'                 // Отступы между линиями и строками
+            LINE_MARGIN: '2px',                // Отступы между линиями и строками
+            DIFF_FONT_SIZE: '26px',            // Размер числа "Разница эло" (крупно сверху)
+            DIFF_LABEL_FONT_SIZE: '13px'      // Размер подписи "Разница эло"
         }
     };
 
@@ -144,8 +168,147 @@
     let updateInterval = null;
     // Один глобальный блок для пати на странице матчмейкинга, чтобы не плодить дубли
     let mainPartyDisplayElement = null;
+    // Время последнего уведомления о высокой разнице эло (для кулдауна)
+    let lastEloDiffNotifyTime = 0;
+    // Кэш результатов для оптимизации — обновляем DOM только при изменении
+    const lobbyResultCache = new WeakMap();
+    let lastMainPartyResultKey = '';
+
+    // Запросить разрешение на браузерные уведомления (нужно для показа уведомлений при большой разнице эло)
+    function requestNotificationPermissionIfNeeded() {
+        if (!CONFIG.NOTIFY_ON_HIGH_ELO_DIFF || typeof Notification === 'undefined') return;
+        if (Notification.permission !== 'default') return; // уже выдано или запрещено
+        try {
+            Notification.requestPermission().catch(() => {});
+        } catch (e) {}
+    }
 
     // === ОСНОВНЫЕ ФУНКЦИИ ===
+
+    // Кастомное оповещение на странице (большой баннер по центру экрана)
+    function showCustomEloDiffAlert(eloDiff) {
+        if (!CONFIG.CUSTOM_ALERT_ON_HIGH_ELO_DIFF || eloDiff == null) return;
+        const existing = document.getElementById('faceit-elo-diff-custom-alert');
+        if (existing && existing.parentNode) existing.remove();
+
+        const cfg = CONFIG.CUSTOM_ALERT || {};
+        const fontSize = cfg.FONT_SIZE || '28px';
+        const minWidth = cfg.MIN_WIDTH || '420px';
+        const padding = cfg.PADDING || '28px 36px';
+        const duration = CONFIG.CUSTOM_ALERT_DURATION_MS || 0;
+
+        const box = document.createElement('div');
+        box.id = 'faceit-elo-diff-custom-alert';
+        box.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 2147483647;
+            min-width: ${minWidth};
+            max-width: 90vw;
+            padding: ${padding};
+            background: linear-gradient(135deg, #c0392b 0%, #8e2a22 100%);
+            color: #fff;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: ${fontSize};
+            font-weight: 700;
+            text-align: center;
+            border-radius: 12px;
+            box-shadow: 0 12px 48px rgba(0,0,0,0.5), 0 0 0 4px rgba(255,255,255,0.15);
+            pointer-events: auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        `;
+        const text = document.createElement('span');
+        text.textContent = `Внимание! Разница эло в лобби: ${eloDiff.toLocaleString('ru-RU')} (порог: ${CONFIG.ELO_DIFF_WARNING_THRESHOLD})`;
+        text.style.whiteSpace = 'pre-wrap';
+        box.appendChild(text);
+        const closeBtn = document.createElement('button');
+        closeBtn.textContent = '×';
+        closeBtn.setAttribute('aria-label', 'Закрыть');
+        closeBtn.style.cssText = `
+            background: rgba(255,255,255,0.25);
+            border: none;
+            color: #fff;
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+            font-size: 28px;
+            line-height: 1;
+            cursor: pointer;
+            flex-shrink: 0;
+        `;
+        closeBtn.onclick = () => removeAlert();
+        box.appendChild(closeBtn);
+
+        function removeAlert() {
+            if (box.parentNode) box.parentNode.removeChild(box);
+            if (timer) clearTimeout(timer);
+        }
+
+        let timer = null;
+        if (duration > 0) timer = setTimeout(removeAlert, duration);
+
+        document.body.appendChild(box);
+    }
+
+    // Показать браузерное уведомление, если разница эло превышает порог (с кулдауном и настройкой вкл/выкл)
+    function tryNotifyHighEloDiff(result) {
+        const wantNotify = CONFIG.NOTIFY_ON_HIGH_ELO_DIFF;
+        const wantSound = CONFIG.NOTIFY_SOUND_ON_HIGH_ELO_DIFF;
+        const wantCustomAlert = CONFIG.CUSTOM_ALERT_ON_HIGH_ELO_DIFF;
+        if (!result || result.eloDiff == null || (!wantNotify && !wantSound && !wantCustomAlert)) return;
+        if (result.eloDiff <= CONFIG.ELO_DIFF_WARNING_THRESHOLD) return;
+        const now = Date.now();
+        if (now - lastEloDiffNotifyTime < CONFIG.ELO_DIFF_NOTIFY_COOLDOWN_MS) return;
+
+        const playWarningSound = () => {
+            if (!wantSound || !CONFIG.ELO_DIFF_SOUND_URL) return;
+            try {
+                const audio = new Audio(CONFIG.ELO_DIFF_SOUND_URL);
+                audio.volume = 0.7;
+                audio.play().catch(() => {});
+            } catch (e) {
+                console.warn('Faceit Party Average Elo: Sound failed', e);
+            }
+        };
+
+        const fireWarning = () => {
+            playWarningSound();
+            if (wantCustomAlert) showCustomEloDiffAlert(result.eloDiff);
+            try {
+                if (wantNotify && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+                    new Notification('FACEIT: большая разница эло', {
+                        body: `Разница эло в лобби: ${result.eloDiff.toLocaleString('ru-RU')} (порог: ${CONFIG.ELO_DIFF_WARNING_THRESHOLD}). Обратите внимание!`,
+                        icon: 'https://faceit.com/favicon.ico',
+                        tag: 'faceit-elo-diff-warning'
+                    });
+                }
+            } catch (e) {
+                console.warn('Faceit Party Average Elo: Notification failed', e);
+            }
+            lastEloDiffNotifyTime = now;
+        };
+
+        if (wantNotify && typeof Notification !== 'undefined') {
+            if (Notification.permission === 'granted') {
+                fireWarning();
+            } else if (Notification.permission !== 'denied') {
+                Notification.requestPermission().then(p => {
+                    if (p === 'granted') fireWarning();
+                    else fireWarning(); // звук всё равно при отказе в уведомлениях
+                }).catch(() => { fireWarning(); });
+            } else {
+                fireWarning(); // permission denied — только звук
+            }
+        } else {
+            fireWarning(); // без браузерного уведомления — только звук (если включён)
+        }
+    }
     
     // Поиск контейнера пати (ищем по всей странице)
     function findPartyContainer() {
@@ -332,11 +495,17 @@
         // Добавляем +100 ELO ПОСЛЕ вычисления среднего, как просили
         const adjustedAverage = roundedAverage + 100;
 
+        // Разница эло: максимальное − минимальное в лобби
+        const maxElo = Math.max(...eloValues);
+        const minElo = Math.min(...eloValues);
+        const eloDiff = maxElo - minElo;
+
             return {
             average: roundedAverage,
             adjustedAverage: adjustedAverage,
                 count: eloValues.length,
-                values: eloValues
+                values: eloValues,
+                eloDiff: eloDiff
             };
     }
 
@@ -437,11 +606,8 @@
     // Обновление надписей под лобби (список лобби в клубе)
     function updateLobbyDisplays() {
         try {
-            // На странице матчмейкинга используем отдельный блок справа,
-            // чтобы не было второго окна слева.
-            if (window.location.pathname.includes('/matchmaking')) {
-                return;
-            }
+            if (!CONFIG.SHOW_LOBBY_ELO_BLOCKS) return;
+            if (window.location.pathname.includes('/matchmaking')) return;
 
             const lobbyContainers = findLobbyContainers();
             if (!lobbyContainers || lobbyContainers.length === 0) {
@@ -451,6 +617,8 @@
             lobbyContainers.forEach(container => {
                 const playerCards = findPlayerCards(container);
                 const result = calculateAverageEloForCards(playerCards);
+                const cacheKey = result ? `${result.average}-${result.count}-${result.eloDiff}` : 'n';
+                if (lobbyResultCache.get(container) === cacheKey) return; // данные не изменились — пропускаем
 
                 // Ищем/создаем элемент для вывода под конкретным лобби
                 let infoElement = container.querySelector('.faceit-lobby-average-elo');
@@ -483,6 +651,19 @@
                     const topLine = document.createElement('div');
                     topLine.className = 'faceit-lobby-average-elo-line-top';
                     topLine.style.cssText = `width: 100%; border-top: 1px solid ${CONFIG.LOBBY_BLOCK.BORDER_COLOR}; margin-bottom: ${CONFIG.LOBBY_BLOCK.LINE_MARGIN};`;
+
+                    const diffContainer = document.createElement('div');
+                    diffContainer.className = 'faceit-lobby-average-elo-diff';
+                    diffContainer.style.cssText = 'margin-bottom: 4px; text-align: center;';
+                    const diffLabel = document.createElement('div');
+                    diffLabel.className = 'faceit-lobby-average-elo-diff-label';
+                    diffLabel.style.cssText = `font-size: ${CONFIG.LOBBY_BLOCK.DIFF_LABEL_FONT_SIZE}; opacity: 0.9;`;
+                    diffLabel.textContent = 'Разница эло';
+                    const diffValue = document.createElement('div');
+                    diffValue.className = 'faceit-lobby-average-elo-diff-value';
+                    diffValue.style.cssText = `font-size: ${CONFIG.LOBBY_BLOCK.DIFF_FONT_SIZE}; font-weight: 700;`;
+                    diffContainer.appendChild(diffLabel);
+                    diffContainer.appendChild(diffValue);
 
                     titleElement = document.createElement('div');
                     titleElement.className = 'faceit-lobby-average-elo-title';
@@ -529,6 +710,7 @@
                     plusValueContainer.appendChild(plusPlayersElement);
 
                     infoElement.appendChild(topLine);
+                    infoElement.appendChild(diffContainer);
                     infoElement.appendChild(titleElement);
                     infoElement.appendChild(middleLine);
                     infoElement.appendChild(valueContainer);
@@ -577,13 +759,28 @@
                     const topLine = infoElement.querySelector('.faceit-lobby-average-elo-line-top');
                     const middleLine = infoElement.querySelector('.faceit-lobby-average-elo-line-middle');
                     const bottomLine = infoElement.querySelector('.faceit-lobby-average-elo-line-bottom');
+                    const diffContainerEl = infoElement.querySelector('.faceit-lobby-average-elo-diff');
+                    const diffValueEl = infoElement.querySelector('.faceit-lobby-average-elo-diff-value');
                     if (!titleElement || !valueContainer || !valueNumberElement || !valuePlayersElement ||
                         !plusLabel || !plusValueContainer || !plusNumberElement || !plusPlayersElement ||
-                        !topLine || !middleLine || !bottomLine) {
+                        !topLine || !middleLine || !bottomLine || !diffContainerEl || !diffValueEl) {
                         infoElement.innerHTML = '';
                         const newTop = document.createElement('div');
                         newTop.className = 'faceit-lobby-average-elo-line-top';
                         newTop.style.cssText = `width: 100%; border-top: 1px solid ${CONFIG.LOBBY_BLOCK.BORDER_COLOR}; margin-bottom: ${CONFIG.LOBBY_BLOCK.LINE_MARGIN};`;
+
+                        const newDiffContainer = document.createElement('div');
+                        newDiffContainer.className = 'faceit-lobby-average-elo-diff';
+                        newDiffContainer.style.cssText = 'margin-bottom: 4px; text-align: center;';
+                        const newDiffLabel = document.createElement('div');
+                        newDiffLabel.className = 'faceit-lobby-average-elo-diff-label';
+                        newDiffLabel.style.cssText = `font-size: ${CONFIG.LOBBY_BLOCK.DIFF_LABEL_FONT_SIZE}; opacity: 0.9;`;
+                        newDiffLabel.textContent = 'Разница эло';
+                        const newDiffValue = document.createElement('div');
+                        newDiffValue.className = 'faceit-lobby-average-elo-diff-value';
+                        newDiffValue.style.cssText = `font-size: ${CONFIG.LOBBY_BLOCK.DIFF_FONT_SIZE}; font-weight: 700;`;
+                        newDiffContainer.appendChild(newDiffLabel);
+                        newDiffContainer.appendChild(newDiffValue);
 
                         titleElement = document.createElement('div');
                         titleElement.className = 'faceit-lobby-average-elo-title';
@@ -630,6 +827,7 @@
                         newPlusValueContainer.appendChild(plusPlayersElement);
 
                         infoElement.appendChild(newTop);
+                        infoElement.appendChild(newDiffContainer);
                         infoElement.appendChild(titleElement);
                         infoElement.appendChild(newMiddle);
                         infoElement.appendChild(newValueContainer);
@@ -647,10 +845,12 @@
                     infoElement.parentElement.appendChild(infoElement);
                 }
 
-                if (!result) {
+                const diffValueElUpdate = infoElement.querySelector('.faceit-lobby-average-elo-diff-value');
+            if (!result) {
                     titleElement.textContent = 'Среднее ELO лобби';
                     valueNumberElement.textContent = 'н/д';
                     valuePlayersElement.textContent = '';
+                    if (diffValueElUpdate) { diffValueElUpdate.textContent = 'н/д'; diffValueElUpdate.style.color = ''; }
                     const plusLabel = infoElement.querySelector('.faceit-lobby-average-elo-plus-label');
                     const plusNumberElement = infoElement.querySelector('.faceit-lobby-average-elo-plus-number');
                     const plusPlayersElement = infoElement.querySelector('.faceit-lobby-average-elo-plus-players');
@@ -665,6 +865,11 @@
                     // Число и количество игроков всегда отдельными элементами
                     valueNumberElement.textContent = baseAvg;
                     valuePlayersElement.textContent = `(${result.count} игроков)`;
+                    if (diffValueElUpdate) {
+                        diffValueElUpdate.textContent = (result.eloDiff != null ? result.eloDiff : 0).toLocaleString('ru-RU');
+                        diffValueElUpdate.style.color = (result.eloDiff != null && result.eloDiff > CONFIG.ELO_DIFF_WARNING_THRESHOLD) ? '#e74c3c' : '#2ecc71';
+                    }
+                    tryNotifyHighEloDiff(result);
                     const plusLabel = infoElement.querySelector('.faceit-lobby-average-elo-plus-label');
                     const plusNumberElement = infoElement.querySelector('.faceit-lobby-average-elo-plus-number');
                     const plusPlayersElement = infoElement.querySelector('.faceit-lobby-average-elo-plus-players');
@@ -675,6 +880,7 @@
                     // Отключаем всплывающую подсказку, чтобы не мешала
                     infoElement.removeAttribute('title');
                 }
+                lobbyResultCache.set(container, cacheKey);
             });
         } catch (error) {
             console.error('Faceit Party Average Elo: Error updating lobby displays', error);
@@ -684,13 +890,14 @@
     // Отображение среднего ELO для текущей пати на главной странице (matchmaking)
     function updateMainPartyDisplay() {
         try {
-            // Работаем только на странице матчмейкинга
+            if (!CONFIG.SHOW_MAIN_PARTY_ELO_BLOCK) return;
             if (!window.location.pathname.includes('/matchmaking')) {
                 const old = document.querySelector('.faceit-mainparty-average-elo');
                 if (old && old.parentElement) {
                     old.parentElement.removeChild(old);
                 }
                 mainPartyDisplayElement = null;
+                lastMainPartyResultKey = '';
                 return;
             }
 
@@ -699,6 +906,8 @@
 
             const playerCards = findPlayerCards(container);
             const result = calculateAverageEloForCards(playerCards);
+            const cacheKey = result ? `${result.average}-${result.count}-${result.eloDiff}` : 'n';
+            if (lastMainPartyResultKey === cacheKey) return; // данные не изменились
 
             // Ищем хедер пати (PartyControl)
             const partyControl =
@@ -740,6 +949,19 @@
                 const topLine = document.createElement('div');
                 topLine.className = 'faceit-mainparty-average-elo-line-top';
                 topLine.style.cssText = `width: 100%; border-top: 1px solid ${CONFIG.MAIN_PARTY_BLOCK.BORDER_COLOR}; margin-bottom: ${CONFIG.MAIN_PARTY_BLOCK.LINE_MARGIN};`;
+
+                const diffContainer = document.createElement('div');
+                diffContainer.className = 'faceit-mainparty-average-elo-diff';
+                diffContainer.style.cssText = 'margin-bottom: 4px; text-align: center;';
+                const diffLabel = document.createElement('div');
+                diffLabel.className = 'faceit-mainparty-average-elo-diff-label';
+                diffLabel.style.cssText = `font-size: ${CONFIG.MAIN_PARTY_BLOCK.DIFF_LABEL_FONT_SIZE}; opacity: 0.9;`;
+                diffLabel.textContent = 'Разница эло';
+                const diffValue = document.createElement('div');
+                diffValue.className = 'faceit-mainparty-average-elo-diff-value';
+                diffValue.style.cssText = `font-size: ${CONFIG.MAIN_PARTY_BLOCK.DIFF_FONT_SIZE}; font-weight: 700;`;
+                diffContainer.appendChild(diffLabel);
+                diffContainer.appendChild(diffValue);
 
                 titleElement = document.createElement('div');
                 titleElement.className = 'faceit-mainparty-average-elo-title';
@@ -786,6 +1008,7 @@
                 plusValueContainer.appendChild(plusPlayersElement);
 
                 infoElement.appendChild(topLine);
+                infoElement.appendChild(diffContainer);
                 infoElement.appendChild(titleElement);
                 infoElement.appendChild(middleLine);
                 infoElement.appendChild(valueContainer);
@@ -834,13 +1057,27 @@
                 const topLine = infoElement.querySelector('.faceit-mainparty-average-elo-line-top');
                 const middleLine = infoElement.querySelector('.faceit-mainparty-average-elo-line-middle');
                 const bottomLine = infoElement.querySelector('.faceit-mainparty-average-elo-line-bottom');
+                const mainDiffValueEl = infoElement.querySelector('.faceit-mainparty-average-elo-diff-value');
                 if (!titleElement || !valueContainer || !valueNumberElement || !valuePlayersElement ||
                     !plusLabel || !plusValueContainer || !plusNumberElement || !plusPlayersElement ||
-                    !topLine || !middleLine || !bottomLine) {
+                    !topLine || !middleLine || !bottomLine || !mainDiffValueEl) {
                     infoElement.innerHTML = '';
                     const newTop = document.createElement('div');
                     newTop.className = 'faceit-mainparty-average-elo-line-top';
                     newTop.style.cssText = `width: 100%; border-top: 1px solid ${CONFIG.MAIN_PARTY_BLOCK.BORDER_COLOR}; margin-bottom: ${CONFIG.MAIN_PARTY_BLOCK.LINE_MARGIN};`;
+
+                    const newDiffContainer = document.createElement('div');
+                    newDiffContainer.className = 'faceit-mainparty-average-elo-diff';
+                    newDiffContainer.style.cssText = 'margin-bottom: 4px; text-align: center;';
+                    const newDiffLabel = document.createElement('div');
+                    newDiffLabel.className = 'faceit-mainparty-average-elo-diff-label';
+                    newDiffLabel.style.cssText = `font-size: ${CONFIG.MAIN_PARTY_BLOCK.DIFF_LABEL_FONT_SIZE}; opacity: 0.9;`;
+                    newDiffLabel.textContent = 'Разница эло';
+                    const newDiffValue = document.createElement('div');
+                    newDiffValue.className = 'faceit-mainparty-average-elo-diff-value';
+                    newDiffValue.style.cssText = `font-size: ${CONFIG.MAIN_PARTY_BLOCK.DIFF_FONT_SIZE}; font-weight: 700;`;
+                    newDiffContainer.appendChild(newDiffLabel);
+                    newDiffContainer.appendChild(newDiffValue);
 
                     titleElement = document.createElement('div');
                     titleElement.className = 'faceit-mainparty-average-elo-title';
@@ -887,6 +1124,7 @@
                     newPlusValueContainer.appendChild(plusPlayersElement);
 
                     infoElement.appendChild(newTop);
+                    infoElement.appendChild(newDiffContainer);
                     infoElement.appendChild(titleElement);
                     infoElement.appendChild(newMiddle);
                     infoElement.appendChild(newValueContainer);
@@ -899,10 +1137,12 @@
                 infoElement.removeAttribute('title');
             }
 
+            const mainPartyDiffValue = infoElement.querySelector('.faceit-mainparty-average-elo-diff-value');
             if (!result) {
                 titleElement.textContent = 'Среднее ELO лобби';
                 valueNumberElement.textContent = 'н/д';
                 valuePlayersElement.textContent = '';
+                if (mainPartyDiffValue) { mainPartyDiffValue.textContent = 'н/д'; mainPartyDiffValue.style.color = ''; }
                 const plusLabel = infoElement.querySelector('.faceit-mainparty-average-elo-plus-label');
                 const plusNumberElement = infoElement.querySelector('.faceit-mainparty-average-elo-plus-number');
                 const plusPlayersElement = infoElement.querySelector('.faceit-mainparty-average-elo-plus-players');
@@ -917,6 +1157,11 @@
                 // Число и количество игроков всегда отдельными элементами
                 valueNumberElement.textContent = baseAvg;
                 valuePlayersElement.textContent = `(${result.count} игроков)`;
+                if (mainPartyDiffValue) {
+                    mainPartyDiffValue.textContent = (result.eloDiff != null ? result.eloDiff : 0).toLocaleString('ru-RU');
+                    mainPartyDiffValue.style.color = (result.eloDiff != null && result.eloDiff > CONFIG.ELO_DIFF_WARNING_THRESHOLD) ? '#e74c3c' : '#2ecc71';
+                }
+                tryNotifyHighEloDiff(result);
                 const plusLabel = infoElement.querySelector('.faceit-mainparty-average-elo-plus-label');
                 const plusNumberElement = infoElement.querySelector('.faceit-mainparty-average-elo-plus-number');
                 const plusPlayersElement = infoElement.querySelector('.faceit-mainparty-average-elo-plus-players');
@@ -927,6 +1172,7 @@
                 // Отключаем всплывающую подсказку, чтобы не мешала
                 infoElement.removeAttribute('title');
             }
+            lastMainPartyResultKey = cacheKey;
         } catch (error) {
             console.error('Faceit Party Average Elo: Error updating main party display', error);
         }
@@ -973,15 +1219,30 @@
                         clearInterval(updateInterval);
                     }
                     updateInterval = setInterval(() => {
-                        updateDisplay();         // пати (расчет)
-                        updateLobbyDisplays();   // лобби на странице клуба
-                        updateMainPartyDisplay(); // главное лобби (matchmaking)
+                        updateDisplay();
+                        if (CONFIG.SHOW_LOBBY_ELO_BLOCKS && !window.location.pathname.includes('/matchmaking')) {
+                            updateLobbyDisplays();
+                        }
+                        if (CONFIG.SHOW_MAIN_PARTY_ELO_BLOCK && window.location.pathname.includes('/matchmaking')) {
+                            updateMainPartyDisplay();
+                        }
                     }, CONFIG.UPDATE_INTERVAL);
                 }
             }
             
             // Начинаем поиск через небольшую задержку
             setTimeout(tryFindParty, CONFIG.INIT_RETRY_DELAY);
+
+            // Один раз запрашиваем разрешение на уведомления (с задержкой), чтобы при большой разнице эло показывались браузерные уведомления
+            setTimeout(requestNotificationPermissionIfNeeded, 3000);
+            // Многие браузеры показывают запрос только после действия пользователя — пробуем по первому клику
+            const once = () => {
+                requestNotificationPermissionIfNeeded();
+                document.removeEventListener('click', once);
+                document.removeEventListener('keydown', once);
+            };
+            document.addEventListener('click', once, { once: false, passive: true });
+            document.addEventListener('keydown', once, { once: false, passive: true });
 
             // Обновляем при изменениях DOM с debounce
             let updateTimeout = null;
