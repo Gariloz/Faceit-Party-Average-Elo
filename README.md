@@ -16,6 +16,8 @@
   * Browser notification (optional)
 * All features toggleable and configurable in `CONFIG`
 * Optimized: caching, conditional updates, reduced intervals to avoid lag
+* Real-time: MutationObserver reacts to DOM changes (SPA navigation, player joins), values update immediately
+* Alerts reset when you navigate to another page and back — no stale cooldown
 * Works on all FACEIT pages: `https://*.faceit.com/*`
 
 ## Installation
@@ -73,6 +75,7 @@ Main things you may want to change:
 * **ELO difference (разница эло)**
   * `ELO_DIFF_WARNING_THRESHOLD` – threshold (e.g. 800); red if diff > threshold.
   * `ELO_DIFF_NOTIFY_COOLDOWN_MS` – pause between alerts (ms).
+  * `ELO_DIFF_NOTIFY_STABILITY_MS` – notify only if high diff persists for this long (ms); avoids false alerts on first load.
   * `ELO_DIFF_SOUND_URL` – URL of sound file.
   * `CUSTOM_ALERT_DURATION_MS` – how long to show banner (0 = until closed).
   * `CUSTOM_ALERT` – `FONT_SIZE`, `MIN_WIDTH`, `PADDING` for the banner.

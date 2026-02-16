@@ -30,6 +30,7 @@
         // === РАЗНИЦА ELO: ПОРОГ И УВЕДОМЛЕНИЯ (все можно вкл/выкл) ===
         ELO_DIFF_WARNING_THRESHOLD: 800,     // Порог: при разнице выше — красный цвет и оповещения
         ELO_DIFF_NOTIFY_COOLDOWN_MS: 60000,  // Пауза между оповещениями (мс), чтобы не спамить
+        ELO_DIFF_NOTIFY_STABILITY_MS: 1000,  // Уведомлять только если высокая разница держится N мс (чтобы не спамить при первой неверной загрузке)
 
         NOTIFY_ON_HIGH_ELO_DIFF: true,      // Браузерное уведомление (true/false) — часто не работает
         NOTIFY_SOUND_ON_HIGH_ELO_DIFF: true, // Звуковое оповещение (true/false)
@@ -170,6 +171,8 @@
     let mainPartyDisplayElement = null;
     // Время последнего уведомления о высокой разнице эло (для кулдауна)
     let lastEloDiffNotifyTime = 0;
+    const highEloDiffStartBySource = new Map();  // ключ: 'main' | container — когда впервые увидели высокую разницу
+    let lastPathnameForNotify = '';  // сброс оповещений при переходе на другую страницу
     // Кэш результатов для оптимизации — обновляем DOM только при изменении
     const lobbyResultCache = new WeakMap();
     let lastMainPartyResultKey = '';
@@ -257,14 +260,27 @@
     }
 
     // Показать браузерное уведомление, если разница эло превышает порог (с кулдауном и настройкой вкл/выкл)
-    function tryNotifyHighEloDiff(result) {
+    // sourceKey: 'main' для матчмейкинга, container — для конкретного лобби в клубах (отдельная стабильность для каждого)
+    function tryNotifyHighEloDiff(result, sourceKey) {
+        const path = window.location.pathname;
+        if (path !== lastPathnameForNotify) {
+            lastPathnameForNotify = path;
+            lastEloDiffNotifyTime = 0;
+            highEloDiffStartBySource.clear();
+        }
         const wantNotify = CONFIG.NOTIFY_ON_HIGH_ELO_DIFF;
         const wantSound = CONFIG.NOTIFY_SOUND_ON_HIGH_ELO_DIFF;
         const wantCustomAlert = CONFIG.CUSTOM_ALERT_ON_HIGH_ELO_DIFF;
         if (!result || result.eloDiff == null || (!wantNotify && !wantSound && !wantCustomAlert)) return;
-        if (result.eloDiff <= CONFIG.ELO_DIFF_WARNING_THRESHOLD) return;
         const now = Date.now();
+        if (result.eloDiff <= CONFIG.ELO_DIFF_WARNING_THRESHOLD) {
+            highEloDiffStartBySource.delete(sourceKey);
+            return;
+        }
         if (now - lastEloDiffNotifyTime < CONFIG.ELO_DIFF_NOTIFY_COOLDOWN_MS) return;
+        if (!highEloDiffStartBySource.has(sourceKey)) highEloDiffStartBySource.set(sourceKey, now);
+        const startTime = highEloDiffStartBySource.get(sourceKey);
+        if (now - startTime < CONFIG.ELO_DIFF_NOTIFY_STABILITY_MS) return;
 
         const playWarningSound = () => {
             if (!wantSound || !CONFIG.ELO_DIFF_SOUND_URL) return;
@@ -292,6 +308,7 @@
                 console.warn('Faceit Party Average Elo: Notification failed', e);
             }
             lastEloDiffNotifyTime = now;
+            highEloDiffStartBySource.delete(sourceKey);
         };
 
         if (wantNotify && typeof Notification !== 'undefined') {
@@ -541,12 +558,22 @@
 
     // Обновление отображения для текущей пати (без отдельной кнопки/блока)
     function updateDisplay() {
-        // Оставляем только расчёт в логах на будущее, визуально ничего не рисуем
         try {
             const result = calculateAverageElo();
             if (!result) return;
         } catch (error) {
             console.error('Faceit Party Average Elo: Error updating display', error);
+        }
+    }
+
+    // Полное обновление: display + блоки ELO + оповещения (вызывается из setInterval и MutationObserver)
+    function runFullUpdate() {
+        updateDisplay();
+        if (CONFIG.SHOW_LOBBY_ELO_BLOCKS && !window.location.pathname.includes('/matchmaking')) {
+            updateLobbyDisplays();
+        }
+        if (CONFIG.SHOW_MAIN_PARTY_ELO_BLOCK && window.location.pathname.includes('/matchmaking')) {
+            updateMainPartyDisplay();
         }
     }
 
@@ -618,7 +645,8 @@
                 const playerCards = findPlayerCards(container);
                 const result = calculateAverageEloForCards(playerCards);
                 const cacheKey = result ? `${result.average}-${result.count}-${result.eloDiff}` : 'n';
-                if (lobbyResultCache.get(container) === cacheKey) return; // данные не изменились — пропускаем
+                tryNotifyHighEloDiff(result, container); // вызываем всегда (проверка стабильности внутри)
+                if (lobbyResultCache.get(container) === cacheKey) return; // данные не изменились — пропускаем DOM
 
                 // Ищем/создаем элемент для вывода под конкретным лобби
                 let infoElement = container.querySelector('.faceit-lobby-average-elo');
@@ -869,7 +897,6 @@
                         diffValueElUpdate.textContent = (result.eloDiff != null ? result.eloDiff : 0).toLocaleString('ru-RU');
                         diffValueElUpdate.style.color = (result.eloDiff != null && result.eloDiff > CONFIG.ELO_DIFF_WARNING_THRESHOLD) ? '#e74c3c' : '#2ecc71';
                     }
-                    tryNotifyHighEloDiff(result);
                     const plusLabel = infoElement.querySelector('.faceit-lobby-average-elo-plus-label');
                     const plusNumberElement = infoElement.querySelector('.faceit-lobby-average-elo-plus-number');
                     const plusPlayersElement = infoElement.querySelector('.faceit-lobby-average-elo-plus-players');
@@ -907,7 +934,8 @@
             const playerCards = findPlayerCards(container);
             const result = calculateAverageEloForCards(playerCards);
             const cacheKey = result ? `${result.average}-${result.count}-${result.eloDiff}` : 'n';
-            if (lastMainPartyResultKey === cacheKey) return; // данные не изменились
+            tryNotifyHighEloDiff(result, 'main'); // вызываем всегда (проверка стабильности внутри)
+            if (lastMainPartyResultKey === cacheKey) return; // данные не изменились — пропускаем DOM
 
             // Ищем хедер пати (PartyControl)
             const partyControl =
@@ -1161,7 +1189,6 @@
                     mainPartyDiffValue.textContent = (result.eloDiff != null ? result.eloDiff : 0).toLocaleString('ru-RU');
                     mainPartyDiffValue.style.color = (result.eloDiff != null && result.eloDiff > CONFIG.ELO_DIFF_WARNING_THRESHOLD) ? '#e74c3c' : '#2ecc71';
                 }
-                tryNotifyHighEloDiff(result);
                 const plusLabel = infoElement.querySelector('.faceit-mainparty-average-elo-plus-label');
                 const plusNumberElement = infoElement.querySelector('.faceit-mainparty-average-elo-plus-number');
                 const plusPlayersElement = infoElement.querySelector('.faceit-mainparty-average-elo-plus-players');
@@ -1207,8 +1234,8 @@
                 attempts++;
                 const found = waitForPartyElements();
                 
-                // Обновляем отображение в любом случае
-                updateDisplay();
+                // Обновляем отображение и блоки ELO в любом случае
+                runFullUpdate();
                 
                 if (!found && attempts < maxAttempts) {
                     // Продолжаем ждать
@@ -1218,15 +1245,7 @@
                     if (updateInterval) {
                         clearInterval(updateInterval);
                     }
-                    updateInterval = setInterval(() => {
-                        updateDisplay();
-                        if (CONFIG.SHOW_LOBBY_ELO_BLOCKS && !window.location.pathname.includes('/matchmaking')) {
-                            updateLobbyDisplays();
-                        }
-                        if (CONFIG.SHOW_MAIN_PARTY_ELO_BLOCK && window.location.pathname.includes('/matchmaking')) {
-                            updateMainPartyDisplay();
-                        }
-                    }, CONFIG.UPDATE_INTERVAL);
+                    updateInterval = setInterval(runFullUpdate, CONFIG.UPDATE_INTERVAL);
                 }
             }
             
@@ -1244,15 +1263,11 @@
             document.addEventListener('click', once, { once: false, passive: true });
             document.addEventListener('keydown', once, { once: false, passive: true });
 
-            // Обновляем при изменениях DOM с debounce
+            // Обновляем при изменениях DOM с debounce (SPA навигация, подгрузка контента)
             let updateTimeout = null;
             const observer = new MutationObserver(() => {
-                if (updateTimeout) {
-                    clearTimeout(updateTimeout);
-                }
-                updateTimeout = setTimeout(() => {
-                    updateDisplay();
-                }, CONFIG.DOM_OBSERVER_DEBOUNCE);
+                if (updateTimeout) clearTimeout(updateTimeout);
+                updateTimeout = setTimeout(runFullUpdate, CONFIG.DOM_OBSERVER_DEBOUNCE);
             });
 
             observer.observe(document.body, {
