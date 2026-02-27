@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Faceit Party Average Elo
 // @namespace    http://tampermonkey.net/
-// @version      1.9
+// @version      2.0
 // @description  Считает среднее ELO всех игроков в пати (сумма ELO / количество игроков)
 // @author       Gariloz
 // @match        https://*.faceit.com/*
@@ -457,6 +457,7 @@
     // Извлечение ELO из карточки игрока
     function extractEloFromCard(card) {
         if (!card) return null;
+        const isValidElo = (n) => Number.isFinite(n) && n >= 100 && n < 10000; // отсекаем skill level 1-10 и мусорные числа
 
         // Ищем ELO текст в карточке - сначала ищем в Tag__Container
         const tagContainer = card.querySelector('[class*="Tag__Container"]');
@@ -466,7 +467,7 @@
                 const eloText = eloElement.textContent.trim();
                 // Убираем запятые и пробелы, оставляем только цифры
                 const eloNumber = parseInt(eloText.replace(/[,\s]/g, ''), 10);
-                if (!isNaN(eloNumber) && eloNumber > 0 && eloNumber < 10000) {
+                if (isValidElo(eloNumber)) {
                     return eloNumber;
                 }
             }
@@ -479,7 +480,7 @@
                 const eloText = eloElement.textContent.trim();
                 // Убираем запятые и пробелы, оставляем только цифры
                 const eloNumber = parseInt(eloText.replace(/[,\s]/g, ''), 10);
-                if (!isNaN(eloNumber) && eloNumber > 0 && eloNumber < 10000) {
+                if (isValidElo(eloNumber)) {
                     return eloNumber;
                 }
             }
@@ -490,15 +491,53 @@
         // Ищем паттерны типа "693", "1,667", "2,131" (3-4 цифры, возможно с запятыми)
         const eloMatches = cardText.match(/\b(\d{1,3}(?:[,\s]\d{3})*)\b/g);
         if (eloMatches && eloMatches.length > 0) {
-            // Берем последнее число (обычно ELO находится в конце карточки)
-            const lastMatch = eloMatches[eloMatches.length - 1];
-            const eloNumber = parseInt(lastMatch.replace(/[,\s]/g, ''), 10);
-            if (!isNaN(eloNumber) && eloNumber > 0 && eloNumber < 10000) {
-                return eloNumber;
+            // Берём последнее "похоже на ELO" число (>= 100), чтобы не схватить skill level "10"
+            for (let i = eloMatches.length - 1; i >= 0; i--) {
+                const m = eloMatches[i];
+                const n = parseInt(m.replace(/[,\s]/g, ''), 10);
+                if (isValidElo(n)) return n;
             }
         }
 
         return null;
+    }
+
+    // Подсчёт карточек игроков (без проверки ELO), чтобы корректно выбирать контейнер при responsive/Spa
+    function countPlayerCardNodes(searchRoot) {
+        if (!searchRoot) return 0;
+        const set = new Set();
+        for (const selector of SELECTORS.PLAYER_CARDS) {
+            try {
+                searchRoot.querySelectorAll(selector).forEach(el => {
+                    if (el && el.isConnected) set.add(el);
+                });
+            } catch (e) {}
+        }
+        return set.size;
+    }
+
+    // Лучший контейнер-строка для вставки блока на matchmaking (обычно CardContainer с максимумом PlayerCardWrapper)
+    function findBestMainPartyHeaderRow(container, partyControl) {
+        const candidates = [];
+        if (container) candidates.push(container);
+        try {
+            container?.querySelectorAll('[class*="CardContainer"]').forEach(el => candidates.push(el));
+        } catch (e) {}
+        if (partyControl && partyControl !== container) candidates.push(partyControl);
+
+        let best = null;
+        let bestCount = 0;
+        const seen = new Set();
+        for (const c of candidates) {
+            if (!c || seen.has(c)) continue;
+            seen.add(c);
+            const cnt = countPlayerCardNodes(c);
+            if (cnt > bestCount) {
+                best = c;
+                bestCount = cnt;
+            }
+        }
+        return best || partyControl || container || null;
     }
 
     // Расчет среднего ELO по массиву карточек игроков
@@ -990,13 +1029,57 @@
         try {
             if (!CONFIG.SHOW_MAIN_PARTY_ELO_BLOCK) return;
             if (!window.location.pathname.includes('/matchmaking')) {
-                const old = document.querySelector('.faceit-mainparty-average-elo');
-                if (old && old.parentElement) {
-                    old.parentElement.removeChild(old);
-                }
+                // Удаляем ВСЕ блоки (раньше удалялся только один и накапливались дубли при SPA/bfcache)
+                document.querySelectorAll('.faceit-mainparty-average-elo').forEach(el => {
+                    try { el.remove(); } catch (e) {}
+                });
                 mainPartyDisplayElement = null;
                 lastMainPartyResultKey = '';
                 return;
+            }
+
+            // Приводим к одному экземпляру блока на странице (иногда появляются дубли после переходов)
+            const canonical = document.getElementById('faceit-mainparty-average-elo');
+            if (canonical && canonical.classList && canonical.classList.contains('faceit-mainparty-average-elo')) {
+                mainPartyDisplayElement = canonical;
+                // удаляем любые другие блоки с таким классом, но другим id/без id
+                document.querySelectorAll('.faceit-mainparty-average-elo').forEach(el => {
+                    if (el !== canonical) {
+                        try { el.remove(); } catch (e) {}
+                    }
+                });
+            } else {
+                // если id ещё не установлен (старые версии) — выбираем лучший из существующих и удаляем остальные
+                const existing = Array.from(document.querySelectorAll('.faceit-mainparty-average-elo'));
+                if (existing.length > 0) {
+                    const score = (el) => {
+                        const num = (el.querySelector('.faceit-mainparty-average-elo-value-number')?.textContent || '').trim();
+                        const diff = (el.querySelector('.faceit-mainparty-average-elo-diff-value')?.textContent || '').trim();
+                        let s = 0;
+                        if (num && num !== 'н/д') s += 3;
+                        if (diff && diff !== 'н/д') s += 1;
+                        if ((el.textContent || '').includes('+100')) s += 1;
+                        // предпочитаем «живой» блок (не затушенный)
+                        if ((el.style.opacity || '') === '1') s += 1;
+                        return s;
+                    };
+                    let best = existing[0];
+                    let bestScore = score(best);
+                    for (const el of existing.slice(1)) {
+                        const sc = score(el);
+                        if (sc >= bestScore) {
+                            best = el;
+                            bestScore = sc;
+                        }
+                    }
+                    best.id = 'faceit-mainparty-average-elo';
+                    mainPartyDisplayElement = best;
+                    existing.forEach(el => {
+                        if (el !== best) {
+                            try { el.remove(); } catch (e) {}
+                        }
+                    });
+                }
             }
 
             const container = findPartyContainer();
@@ -1011,7 +1094,30 @@
             const result = calculateAverageEloForCards(playerCards);
             const cacheKey = result ? `${result.average}-${result.count}-${result.eloDiff}` : 'n';
             tryNotifyHighEloDiff(result, 'main'); // вызываем всегда (проверка стабильности внутри)
-            if (lastMainPartyResultKey === cacheKey) return; // данные не изменились — пропускаем DOM
+            // Если значения не изменились, всё равно нужно убедиться, что блок существует и находится в актуальном месте
+            if (lastMainPartyResultKey === cacheKey) {
+                const existingEl = document.getElementById('faceit-mainparty-average-elo');
+                if (existingEl && existingEl.classList && existingEl.classList.contains('faceit-mainparty-average-elo')) {
+                    // Ищем хедер пати (PartyControl)
+                    const partyControlExisting =
+                        container.querySelector('[class*="PartyControl__Container"]') ||
+                        container.querySelector('[class*="PartyControl__Holder"]') ||
+                        container.querySelector('[class*="styles__PartyControlContainer"]') ||
+                        container;
+
+                    try {
+                        const headerRowNow = findBestMainPartyHeaderRow(container, partyControlExisting);
+                        if (headerRowNow && existingEl.parentElement !== headerRowNow) {
+                            const rowStyleNow = window.getComputedStyle(headerRowNow);
+                            if (rowStyleNow.position === 'static') headerRowNow.style.position = 'relative';
+                            headerRowNow.appendChild(existingEl);
+                        }
+                    } catch (e) {}
+                    mainPartyDisplayElement = existingEl;
+                    return; // DOM уже актуален
+                }
+                // если блока нет — продолжаем ниже, создадим заново
+            }
 
             // Ищем хедер пати (PartyControl)
             const partyControl =
@@ -1019,6 +1125,8 @@
                 container.querySelector('[class*="PartyControl__Holder"]') ||
                 container.querySelector('[class*="styles__PartyControlContainer"]') ||
                 container;
+
+            const headerRowPreferred = findBestMainPartyHeaderRow(container, partyControl);
 
             // Используем один глобальный элемент, чтобы не плодить бесконечно новые дивы
             let infoElement = mainPartyDisplayElement && document.body.contains(mainPartyDisplayElement)
@@ -1030,6 +1138,7 @@
 
             if (!infoElement) {
                 infoElement = document.createElement('div');
+                infoElement.id = 'faceit-mainparty-average-elo';
                 infoElement.className = 'faceit-mainparty-average-elo';
                 infoElement.style.cssText = `
                     margin-top: 6px;
@@ -1047,6 +1156,9 @@
                     width: max-content;
                     margin-left: auto;
                     order: 9999; /* всегда в самом конце flex-строки */
+                    align-self: flex-end;
+                    justify-self: end;
+                    flex: 0 0 auto;
                     pointer-events: none; /* чтобы не было никаких тултипов/ховеров */
                 `;
 
@@ -1120,36 +1232,17 @@
                 infoElement.appendChild(plusValueContainer);
                 infoElement.appendChild(bottomLine);
 
-                // Вставляем блок в строку с карточками игроков,
-                // чтобы он выглядел так же, как в списке лобби.
-                let headerRow = null;
-                const firstPlayerCard =
-                    container.querySelector('[class*="PlayerCardWrapper-sc-84becbd1-2"]') ||
-                    container.querySelector('[class*="PlayerCardWrapper"]') ||
-                    container.querySelector('[data-testid="playerCard"]');
-
-                if (firstPlayerCard) {
-                    headerRow =
-                        firstPlayerCard.closest('[class*="CardContainer-sc-c9a9cc81-1"]') ||
-                        firstPlayerCard.closest('[class*="CardContainer"]') ||
-                        firstPlayerCard.parentElement;
+                const rowStyle = headerRowPreferred ? window.getComputedStyle(headerRowPreferred) : null;
+                if (headerRowPreferred && rowStyle && rowStyle.position === 'static') {
+                    headerRowPreferred.style.position = 'relative';
                 }
-
-                if (!headerRow) {
-                    // На всякий случай, если не нашли карточки, вешаем на PartyControl
-                    headerRow = partyControl;
-                }
-
-                const rowStyle = window.getComputedStyle(headerRow);
-                if (rowStyle.position === 'static') {
-                    headerRow.style.position = 'relative';
-                }
-
-                headerRow.appendChild(infoElement);
+                if (headerRowPreferred) headerRowPreferred.appendChild(infoElement);
 
                 // Сохраняем для повторного использования
                 mainPartyDisplayElement = infoElement;
             } else {
+                // на всякий случай фиксируем id, если блок был создан старой версией/руками
+                if (!infoElement.id) infoElement.id = 'faceit-mainparty-average-elo';
                 titleElement = infoElement.querySelector('.faceit-mainparty-average-elo-title');
                 const valueContainer = infoElement.querySelector('.faceit-mainparty-average-elo-value');
                 valueNumberElement = infoElement.querySelector('.faceit-mainparty-average-elo-value-number');
@@ -1275,6 +1368,16 @@
                 // Отключаем всплывающую подсказку, чтобы не мешала
                 infoElement.removeAttribute('title');
             }
+
+            // Если FACEIT пересобрал DOM (SPA/bfcache), переносим блок в актуальную строку карточек
+            try {
+                const headerRowNow = findBestMainPartyHeaderRow(container, partyControl);
+                if (headerRowNow && infoElement.parentElement !== headerRowNow) {
+                    const rowStyleNow = window.getComputedStyle(headerRowNow);
+                    if (rowStyleNow.position === 'static') headerRowNow.style.position = 'relative';
+                    headerRowNow.appendChild(infoElement); // appendChild перемещает, не дублирует
+                }
+            } catch (e) {}
             lastMainPartyResultKey = cacheKey;
         } catch (error) {
             console.error('Faceit Party Average Elo: Error updating main party display', error);
