@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Faceit Party Average Elo
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.2
 // @description  Считает среднее ELO всех игроков в пати (сумма ELO / количество игроков)
 // @author       Gariloz
 // @match        https://*.faceit.com/*
@@ -486,55 +486,71 @@
             }
         }
 
-        // Альтернативный поиск: ищем числа в тексте карточки
-        const cardText = card.textContent || '';
-        // Ищем паттерны типа "693", "1,667", "2,131" (3-4 цифры, возможно с запятыми)
-        const eloMatches = cardText.match(/\b(\d{1,3}(?:[,\s]\d{3})*)\b/g);
-        if (eloMatches && eloMatches.length > 0) {
-            // Берём последнее "похоже на ELO" число (>= 100), чтобы не схватить skill level "10"
-            for (let i = eloMatches.length - 1; i >= 0; i--) {
-                const m = eloMatches[i];
-                const n = parseInt(m.replace(/[,\s]/g, ''), 10);
-                if (isValidElo(n)) return n;
-            }
-        }
-
         return null;
     }
 
-    // Подсчёт карточек игроков (без проверки ELO), чтобы корректно выбирать контейнер при responsive/Spa
+    function isElementVisible(el) {
+        if (!el || !el.isConnected) return false;
+        try {
+            const style = window.getComputedStyle(el);
+            if (!style || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // Подсчёт карточек игроков (без проверки ELO), только ВИДИМЫЕ — чтобы корректно выбирать контейнер при responsive/Spa
     function countPlayerCardNodes(searchRoot) {
         if (!searchRoot) return 0;
         const set = new Set();
         for (const selector of SELECTORS.PLAYER_CARDS) {
             try {
                 searchRoot.querySelectorAll(selector).forEach(el => {
-                    if (el && el.isConnected) set.add(el);
+                    if (isElementVisible(el)) set.add(el);
                 });
             } catch (e) {}
         }
         return set.size;
     }
 
-    // Лучший контейнер-строка для вставки блока на matchmaking (обычно CardContainer с максимумом PlayerCardWrapper)
+    // Лучший контейнер-строка для вставки блока (CardContainer, который содержит видимые карточки игроков).
+    // ВАЖНО: на FACEIT часто есть одновременно desktop+mobile разметка, одна из них скрыта — учитываем только видимую.
     function findBestMainPartyHeaderRow(container, partyControl) {
         const candidates = [];
-        if (container) candidates.push(container);
         try {
-            container?.querySelectorAll('[class*="CardContainer"]').forEach(el => candidates.push(el));
+            const wrappers = [];
+            for (const sel of SELECTORS.PLAYER_CARDS) {
+                try { container?.querySelectorAll(sel).forEach(el => wrappers.push(el)); } catch (e) {}
+            }
+            for (const w of wrappers) {
+                if (!isElementVisible(w)) continue;
+                const cc = w.closest('[class*="CardContainer"]');
+                if (cc) candidates.push(cc);
+            }
         } catch (e) {}
-        if (partyControl && partyControl !== container) candidates.push(partyControl);
 
-        let best = null;
-        let bestCount = 0;
+        const uniq = [];
         const seen = new Set();
         for (const c of candidates) {
             if (!c || seen.has(c)) continue;
             seen.add(c);
+            uniq.push(c);
+        }
+
+        let best = null;
+        let bestCount = -1;
+        let bestArea = Infinity;
+        for (const c of uniq) {
             const cnt = countPlayerCardNodes(c);
-            if (cnt > bestCount) {
+            if (cnt <= 0) continue;
+            const r = c.getBoundingClientRect();
+            const area = (r.width || 0) * (r.height || 0);
+            if (cnt > bestCount || (cnt === bestCount && area > 0 && area < bestArea)) {
                 best = c;
                 bestCount = cnt;
+                bestArea = area;
             }
         }
         return best || partyControl || container || null;
@@ -756,10 +772,23 @@
                 const result = calculateAverageEloForCards(playerCards);
                 const cacheKey = result ? `${result.average}-${result.count}-${result.eloDiff}` : 'n';
                 tryNotifyHighEloDiff(result, container); // вызываем всегда (проверка стабильности внутри)
-                if (lobbyResultCache.get(container) === cacheKey) return; // данные не изменились — пропускаем DOM
-
                 // Ищем/создаем элемент для вывода под конкретным лобби
-                let infoElement = container.querySelector('.faceit-lobby-average-elo');
+                // Убираем дубли, если они накопились после SPA/responsive
+                const allExisting = Array.from(container.querySelectorAll('.faceit-lobby-average-elo'));
+                let infoElement = allExisting[0] || null;
+                if (allExisting.length > 1) {
+                    allExisting.slice(1).forEach(el => { try { el.remove(); } catch (e) {} });
+                }
+
+                // Даже если данные не изменились, при ресайзе/сворачивании FACEIT перестраивает DOM,
+                // и наш блок "уезжает" внутрь ряда. Всегда держим его последним справа.
+                if (lobbyResultCache.get(container) === cacheKey && infoElement && infoElement.isConnected) {
+                    infoElement.removeAttribute('title');
+                    if (infoElement.parentElement && infoElement.parentElement.lastElementChild !== infoElement) {
+                        infoElement.parentElement.appendChild(infoElement);
+                    }
+                    return; // DOM поправили, больше ничего не нужно
+                }
                 let titleElement;
                 let valueNumberElement;
                 let valuePlayersElement;
@@ -782,7 +811,8 @@
                         flex-direction: column;
                         width: max-content;
                         margin-left: auto;
-                        pointer-events: none; /* чтобы не было никаких тултипов/ховеров */
+                        pointer-events: auto; /* не даём ховеру/подсказкам "пробиваться" на элементы под блоком */
+                        user-select: none;
                     `;
 
                     // Линия сверху (для визуальной рамки)
@@ -978,7 +1008,8 @@
                 // На всякий случай всегда убираем title, чтобы не было подсказки
                 infoElement.removeAttribute('title');
 
-                // Форсим, чтобы блок всегда был последним элементом в своём footer (справа)
+                // Держим блок последним элементом в текущем контейнере (справа).
+                // ВАЖНО: не переносим в другие контейнеры при ресайзе — это и вызывало "уплывание".
                 if (infoElement.parentElement && infoElement.parentElement.lastElementChild !== infoElement) {
                     infoElement.parentElement.appendChild(infoElement);
                 }
@@ -1156,10 +1187,8 @@
                     width: max-content;
                     margin-left: auto;
                     order: 9999; /* всегда в самом конце flex-строки */
-                    align-self: flex-end;
-                    justify-self: end;
-                    flex: 0 0 auto;
-                    pointer-events: none; /* чтобы не было никаких тултипов/ховеров */
+                    pointer-events: auto; /* не даём ховеру/подсказкам "пробиваться" на элементы под блоком */
+                    user-select: none;
                 `;
 
                 const topLine = document.createElement('div');
