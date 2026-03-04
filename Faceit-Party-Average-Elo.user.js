@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Faceit Party Average Elo
 // @namespace    http://tampermonkey.net/
-// @version      2.2
+// @version      2.3
 // @description  Считает среднее ELO всех игроков в пати (сумма ELO / количество игроков)
 // @author       Gariloz
 // @match        https://*.faceit.com/*
