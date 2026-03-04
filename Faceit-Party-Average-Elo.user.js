@@ -122,6 +122,54 @@
         }
     };
 
+    // === НАСТРОЙКИ КНОПКИ СТАРТА/СТОПА МАТЧА В КЛУБЕ ===
+    // Данные из NEW.har (актуальный источник).
+    const MATCHMAKING_CONTROL = {
+        ENABLE_CLUB_BUTTON: true,
+        LOBBY_OWNER_NICKNAME: 'gariloz',
+
+        USER_ID: '1bb9209f-4595-4fa8-b5d1-b29715325084',
+        ENTITY_ID: 'f4148ddd-bce8-41b8-9131-ee83afcdd6dd',
+        SERVER_PINGS: { Vladivostok: null, Sweden: null, Moscow: null, Germany: null, Finland: null, Novosibirsk: null, Kazakhstan: null, Yekaterinburg: null },
+
+        BUTTON_TEXT_START: 'Find match',
+        BUTTON_TEXT_STOP: 'Stop search',
+        BUTTON_STYLES: `
+            margin-left: 8px;
+            padding: 4px 12px;
+            border-radius: 4px;
+            border: none;
+            font-size: 12px;
+            font-weight: 600;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            cursor: pointer;
+            background: linear-gradient(135deg, #ff8a00 0%, #ff5e3a 100%);
+            color: #fff;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            white-space: nowrap;
+        `,
+        BUTTON_STYLES_SEARCHING: `
+            margin-left: 8px;
+            padding: 4px 12px;
+            border-radius: 4px;
+            border: none;
+            font-size: 12px;
+            font-weight: 600;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            cursor: pointer;
+            background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%);
+            color: #fff;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            white-space: nowrap;
+        `
+    };
+
     // === СЕЛЕКТОРЫ ДЛЯ ПОИСКА ЭЛЕМЕНТОВ ===
     const SELECTORS = {
         // Контейнер пати (широкий поиск; FACEIT часто меняет хеши в классах)
@@ -184,6 +232,12 @@
     let matchmakingRetryCount = 0;
     let lobbyRetryCount = 0;
     let aggressivePollingId = null;
+
+    // Состояние и управление клубной кнопкой поиска матча
+    let isClubMatchSearching = false;
+    let isClubMatchRequestInFlight = false;
+    let lastQueueStateCheckTime = 0;
+    const QUEUE_STATE_CHECK_INTERVAL_MS = 7000; // не слишком часто, чтобы не спамить API
 
     // Запросить разрешение на браузерные уведомления (нужно для показа уведомлений при большой разнице эло)
     function requestNotificationPermissionIfNeeded() {
@@ -700,6 +754,193 @@
         }
     }
 
+    // === API ДЛЯ ЗАПУСКА/ОСТАНОВКИ МАТЧМЕЙКИНГА (ИСПОЛЬЗУЕТСЯ КНОПКОЙ В КЛУБЕ) ===
+
+    function getClubButtonText() {
+        return isClubMatchSearching ? MATCHMAKING_CONTROL.BUTTON_TEXT_STOP : MATCHMAKING_CONTROL.BUTTON_TEXT_START;
+    }
+
+    function applyClubButtonStyles(button) {
+        const css = isClubMatchSearching
+            ? MATCHMAKING_CONTROL.BUTTON_STYLES_SEARCHING
+            : MATCHMAKING_CONTROL.BUTTON_STYLES;
+        button.style.cssText = css;
+    }
+
+    async function fetchMatchmakingData() {
+        const url = `https://www.faceit.com/api/matchmaking-bff/v1/users/${MATCHMAKING_CONTROL.USER_ID}/games/cs2/regions/EU/matchmakings`;
+        const res = await fetch(url, { credentials: 'include' });
+        if (!res.ok) return null;
+        const data = await res.json().catch(() => null);
+        const party = data && data.payload && data.payload.party;
+        if (!party || !party.id || !Array.isArray(party.members) || party.members.length === 0) return null;
+        return { partyId: party.id, userIds: party.members };
+    }
+
+    async function startMatchmakingFromClub() {
+        const mmData = await fetchMatchmakingData();
+        if (!mmData) {
+            alert('Не удалось получить данные пати. Перейди на страницу matchmaking и попробуй снова.');
+            throw new Error('No party data');
+        }
+
+        const body = {
+            entityType: 'matchmaking',
+            entityId: MATCHMAKING_CONTROL.ENTITY_ID,
+            leaderId: MATCHMAKING_CONTROL.USER_ID,
+            playerId: mmData.partyId,
+            playerType: 'party',
+            userIds: mmData.userIds,
+            selection: {},
+            serverPings: MATCHMAKING_CONTROL.SERVER_PINGS
+        };
+
+        const res = await fetch('https://www.faceit.com/api/queue/v2/player', {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+                'content-type': 'application/json',
+                'faceit-referer': 'web-next'
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (!res.ok) {
+            let text = await res.text().catch(() => '');
+            let msg = `Ошибка старта матча (HTTP ${res.status})`;
+            try {
+                const json = JSON.parse(text);
+                const payload = json && json.payload;
+                const m = (payload && payload.message) || (json && json.message);
+                if (m) msg = m;
+            } catch (e) {}
+
+            alert(msg);
+
+            console.error('Faceit Party Average Elo: ошибка старта поиска матча', res.status, text);
+            throw new Error('Failed to start matchmaking');
+        }
+    }
+
+    async function stopMatchmakingFromClub() {
+        const url = `https://www.faceit.com/api/queue/v2/player/matchmaking/${MATCHMAKING_CONTROL.ENTITY_ID}/${MATCHMAKING_CONTROL.USER_ID}`;
+        const res = await fetch(url, {
+            method: 'DELETE',
+            credentials: 'include',
+            headers: { 'faceit-referer': 'web-next' }
+        });
+
+        if (!res.ok) {
+            const text = await res.text().catch(() => '');
+            console.error('Faceit Party Average Elo: ошибка остановки поиска матча', res.status, text);
+            throw new Error('Failed to stop matchmaking');
+        }
+    }
+
+    async function fetchQueueStateOnce() {
+        if (!MATCHMAKING_CONTROL.USER_ID) return;
+        const now = Date.now();
+        if (now - lastQueueStateCheckTime < QUEUE_STATE_CHECK_INTERVAL_MS) return;
+        lastQueueStateCheckTime = now;
+
+        try {
+            const url = `https://www.faceit.com/api/queue/v2/player/user/${MATCHMAKING_CONTROL.USER_ID}`;
+            const res = await fetch(url, { credentials: 'include' });
+            if (!res.ok) return;
+            const data = await res.json().catch(() => null);
+            if (!data || !data.payload) return;
+
+            const payload = data.payload;
+            const queues = payload.queues || payload.activeQueues || [];
+            const hasQueues = Array.isArray(queues) && queues.length > 0;
+            isClubMatchSearching = !!hasQueues;
+        } catch (e) {
+            // Тихо игнорируем сетевые ошибки
+        }
+    }
+
+    function handleClubButtonClick(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (isClubMatchRequestInFlight) return;
+
+        const button = event.currentTarget;
+        isClubMatchRequestInFlight = true;
+        button.disabled = true;
+
+        const action = isClubMatchSearching ? stopMatchmakingFromClub : startMatchmakingFromClub;
+
+        action()
+            .then(() => {
+                isClubMatchSearching = !isClubMatchSearching;
+            })
+            .catch(() => {
+                // Ошибку уже залогировали выше
+            })
+            .finally(() => {
+                button.disabled = false;
+                isClubMatchRequestInFlight = false;
+                button.textContent = getClubButtonText();
+                applyClubButtonStyles(button);
+            });
+    }
+
+    function attachClubMatchmakingButton(container) {
+        try {
+            if (!MATCHMAKING_CONTROL.ENABLE_CLUB_BUTTON) return;
+            if (!MATCHMAKING_CONTROL.LOBBY_OWNER_NICKNAME) return;
+
+            // Добавляем кнопку только в то лобби, где название/ник совпадает с нашим
+            let hasOwner = false;
+            const all = container.querySelectorAll('*');
+            for (const el of all) {
+                const text = (el.textContent || '').trim();
+                if (text === MATCHMAKING_CONTROL.LOBBY_OWNER_NICKNAME) {
+                    hasOwner = true;
+                    break;
+                }
+            }
+            if (!hasOwner) return;
+
+            // Вставляем кнопку внутрь нашего основного блока со средним ELO
+            const infoElement = container.querySelector('.faceit-lobby-average-elo');
+            if (!infoElement) return;
+
+            // Ищем "нижнюю линию", чтобы вставить кнопку прямо над ней
+            const bottomLine = infoElement.querySelector('.faceit-lobby-average-elo-line-bottom');
+
+            let button = infoElement.querySelector('.faceit-club-matchmaking-button');
+            if (!button) {
+                button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'faceit-club-matchmaking-button';
+                button.setAttribute('data-faceit-elo-script', '1');
+                button.textContent = getClubButtonText();
+                applyClubButtonStyles(button);
+                // Немного подправляем стили под наш вертикальный блок
+                button.style.marginTop = '4px';
+                button.style.width = '100%';
+                button.style.justifyContent = 'center';
+                button.addEventListener('click', handleClubButtonClick);
+
+                if (bottomLine && bottomLine.parentElement === infoElement) {
+                    infoElement.insertBefore(button, bottomLine);
+                } else {
+                    infoElement.appendChild(button);
+                }
+            } else {
+                // Обновляем текст/стили если состояние поменялось
+                button.textContent = getClubButtonText();
+                applyClubButtonStyles(button);
+                button.style.marginTop = '4px';
+                button.style.width = '100%';
+                button.style.justifyContent = 'center';
+            }
+        } catch (e) {
+            console.error('Faceit Party Average Elo: ошибка при добавлении кнопки старта матча в клубе', e);
+        }
+    }
+
     // === ОТОБРАЖЕНИЕ СРЕДНЕГО ELO ПОД КАЖДЫМ ЛОББИ ===
 
     // Поиск контейнеров лобби на странице
@@ -768,6 +1009,10 @@
             stopAggressivePolling();
 
             lobbyContainers.forEach(container => {
+                // Обновляем состояние очереди (не чаще, чем раз в N секунд),
+                // чтобы текст кнопки соответствовал реальному статусу
+                fetchQueueStateOnce();
+
                 const playerCards = findPlayerCards(container);
                 const result = calculateAverageEloForCards(playerCards);
                 const cacheKey = result ? `${result.average}-${result.count}-${result.eloDiff}` : 'n';
@@ -1049,6 +1294,9 @@
                     infoElement.removeAttribute('title');
                 }
                 lobbyResultCache.set(container, cacheKey);
+
+                // Пробуем добавить/обновить кнопку старта/стопа поиска матча в клубе для лобби Gariloz
+                attachClubMatchmakingButton(container);
             });
         } catch (error) {
             console.error('Faceit Party Average Elo: Error updating lobby displays', error);
