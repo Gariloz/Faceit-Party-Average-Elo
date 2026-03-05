@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Faceit Party Average Elo
 // @namespace    http://tampermonkey.net/
-// @version      2.3
+// @version      2.5
 // @description  Считает среднее ELO всех игроков в пати (сумма ELO / количество игроков)
 // @author       Gariloz
 // @match        https://*.faceit.com/*
@@ -69,20 +69,17 @@
             // Строка: "Среднее ELO лобби"
             TITLE_FONT_SIZE: '12px',          // Размер надписи "Среднее ELO лобби"
 
-            // Строка с обычным средним: "611 (2 игроков)"
-            // ЭТО КЛЮЧЕВОЙ ПАРАМЕТР для увеличения числа "611"
-            VALUE_FONT_SIZE: '20px',          // Размер числа 611
-            VALUE_FONT_WEIGHT: '700',         // Жирность числа 611
-            VALUE_PLAYERS_FONT_SIZE: '10px',  // Размер текста "(2 игроков)" под числом 611
+            // Основное значение (средний ELO): большой текст по центру
+            VALUE_FONT_SIZE: '20px',          // Размер числа среднего ELO
+            VALUE_FONT_WEIGHT: '700',         // Жирность числа среднего ELO
+            VALUE_PLAYERS_FONT_SIZE: '10px',  // Размер подписи с количеством игроков под числом
 
-            // Строка "+100"
-            // Этой строкой выводится отдельная строка с подписью "+100"
+            // Подпись "+100" (пояснение строки с “среднее + 100”)
             PLUS_LABEL_FONT_SIZE: '12px',     // Размер надписи "+100"
 
-            // Строка с ELO по правилу +100: "711 (2 игроков)"
-            // ЭТО КЛЮЧЕВОЙ ПАРАМЕТР для увеличения числа "711"
-            PLUS_VALUE_FONT_SIZE: '20px',     // Размер числа 711
-            PLUS_VALUE_PLAYERS_FONT_SIZE: '10px', // Размер текста "(2 игроков)" под числом 711
+            // Значение “среднее + 100”
+            PLUS_VALUE_FONT_SIZE: '20px',     // Размер числа (среднее + 100)
+            PLUS_VALUE_PLAYERS_FONT_SIZE: '10px', // Размер подписи с количеством игроков под числом
 
             LINE_MARGIN: '2px',               // Отступы между линиями и строками текста
             DIFF_FONT_SIZE: '26px',           // Размер числа "Разница эло" (крупно сверху)
@@ -102,72 +99,94 @@
             // Строка: "Среднее ELO лобби"
             TITLE_FONT_SIZE: '13px',           // Размер заголовка на главной
 
-            // Строка с обычным средним: "611 (2 игроков)"
-            // ЭТО КЛЮЧЕВОЙ ПАРАМЕТР для увеличения числа "611" на главной
-            VALUE_FONT_SIZE: '20px',           // Размер числа 611 (основное, самое крупное значение)
-            VALUE_FONT_WEIGHT: '700',          // Жирность этого числа
-            VALUE_PLAYERS_FONT_SIZE: '12px',   // Размер текста "(2 игроков)" под числом 611
+            // Основное значение (средний ELO): большой текст по центру
+            VALUE_FONT_SIZE: '20px',           // Размер числа среднего ELO (главная страница matchmaking)
+            VALUE_FONT_WEIGHT: '700',          // Жирность числа среднего ELO
+            VALUE_PLAYERS_FONT_SIZE: '12px',   // Размер подписи с количеством игроков под числом
 
-            // Строка "+100"
+            // Подпись "+100" (пояснение строки с “среднее + 100”)
             PLUS_LABEL_FONT_SIZE: '13px',      // Размер надписи "+100" на главной
 
-            // Строка с ELO по правилу +100: "711 (2 игроков)"
-            // ЭТО КЛЮЧЕВОЙ ПАРАМЕТР для увеличения числа "711" на главной
-            PLUS_VALUE_FONT_SIZE: '20px',      // Размер числа 711
-            PLUS_VALUE_PLAYERS_FONT_SIZE: '12px', // Размер текста "(2 игроков)" под числом 711
+            // Значение “среднее + 100”
+            PLUS_VALUE_FONT_SIZE: '20px',      // Размер числа (среднее + 100)
+            PLUS_VALUE_PLAYERS_FONT_SIZE: '12px', // Размер подписи с количеством игроков под числом
 
             LINE_MARGIN: '2px',                // Отступы между линиями и строками
             DIFF_FONT_SIZE: '26px',            // Размер числа "Разница эло" (крупно сверху)
             DIFF_LABEL_FONT_SIZE: '13px'      // Размер подписи "Разница эло"
+        },
+
+        // === КНОПКА START/STOP ПОИСКА В КЛУБЕ ===
+        // ВАЖНО: чтобы НЕ делать лишние API-запросы, данные пати (PARTY_ID / PARTY_USER_IDS) задаём вручную.
+        // Их можно взять из Network запроса: POST https://www.faceit.com/api/queue/v2/player (файл NEW.har).
+        MATCHMAKING_BUTTON: {
+            ENABLED: true, // показывать кнопку в клубных лобби
+            LIMIT_TO_OWNER_LOBBY: false, // если true — кнопка только в лобби капитана (по нику ниже)
+            LOBBY_OWNER_NICKNAME: '', // ник капитана (используется только если LIMIT_TO_OWNER_LOBBY = true)
+
+            USER_ID: '1bb9209f-4595-4fa8-b5d1-b29715325084',
+            ENTITY_ID: 'f4148ddd-bce8-41b8-9131-ee83afcdd6dd',
+
+            // Тело запроса START (POST /api/queue/v2/player)
+            PARTY_ID: 'cd0167e9-9962-4ba8-8157-94fbf9157995',
+            PARTY_USER_IDS: [
+                '15ed20c9-8dfa-481b-9774-f5ad70ccbf44',
+                '6a40e50b-6b45-4a17-aed6-251a64fc3611',
+                '1bb9209f-4595-4fa8-b5d1-b29715325084',
+                '3d033e40-e521-41fe-8430-17e3dc6d769a',
+                'ca591883-e320-45f4-9a02-b9da3ceec6d7'
+            ],
+            SERVER_PINGS: { Vladivostok: null, Sweden: null, Moscow: null, Germany: null, Finland: null, Novosibirsk: null, Kazakhstan: null, Yekaterinburg: null },
+
+            TEXT_START: 'Find match',
+            TEXT_STOP: 'Stop search',
+            TEXT_IN_MATCH: 'In match', // текст на кнопке, когда матч уже начался
+            DISABLE_WHEN_IN_MATCH: true, // блокировать кнопку во время матча (не отправлять stop)
+
+            // Определение статуса поиска БЕЗ API (по индикатору в меню слева: кнопка "Matches")
+            DOM_STATUS_ENABLED: true,
+            MATCHES_NAV_ARIA_LABEL: 'Matches',
+            STYLES_IDLE: `
+                margin-left: 8px;
+                padding: 4px 12px;
+                border-radius: 4px;
+                border: none;
+                font-size: 12px;
+                font-weight: 600;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                cursor: pointer;
+                background: linear-gradient(135deg, #ff8a00 0%, #ff5e3a 100%);
+                color: #fff;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+                white-space: nowrap;
+            `,
+            STYLES_SEARCHING: `
+                margin-left: 8px;
+                padding: 4px 12px;
+                border-radius: 4px;
+                border: none;
+                font-size: 12px;
+                font-weight: 600;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                cursor: pointer;
+                background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%);
+                color: #fff;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+                white-space: nowrap;
+            `
+        },
+
+        // === ВНУТРЕННИЕ ТАЙМИНГИ РЕНДЕРА (можно трогать, если что-то не отрисовывается) ===
+        RENDER: {
+            AGGRESSIVE_POLL_MS: 150,      // как часто пробовать перерисовать, когда FACEIT перестроил DOM
+            AGGRESSIVE_POLL_MAX_MS: 30000 // сколько максимум “дожимать” отрисовку (мс)
         }
-    };
-
-    // === НАСТРОЙКИ КНОПКИ СТАРТА/СТОПА МАТЧА В КЛУБЕ ===
-    // Данные из NEW.har (актуальный источник).
-    const MATCHMAKING_CONTROL = {
-        ENABLE_CLUB_BUTTON: true,
-        LOBBY_OWNER_NICKNAME: 'gariloz',
-
-        USER_ID: '1bb9209f-4595-4fa8-b5d1-b29715325084',
-        ENTITY_ID: 'f4148ddd-bce8-41b8-9131-ee83afcdd6dd',
-        SERVER_PINGS: { Vladivostok: null, Sweden: null, Moscow: null, Germany: null, Finland: null, Novosibirsk: null, Kazakhstan: null, Yekaterinburg: null },
-
-        BUTTON_TEXT_START: 'Find match',
-        BUTTON_TEXT_STOP: 'Stop search',
-        BUTTON_STYLES: `
-            margin-left: 8px;
-            padding: 4px 12px;
-            border-radius: 4px;
-            border: none;
-            font-size: 12px;
-            font-weight: 600;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            cursor: pointer;
-            background: linear-gradient(135deg, #ff8a00 0%, #ff5e3a 100%);
-            color: #fff;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 6px;
-            white-space: nowrap;
-        `,
-        BUTTON_STYLES_SEARCHING: `
-            margin-left: 8px;
-            padding: 4px 12px;
-            border-radius: 4px;
-            border: none;
-            font-size: 12px;
-            font-weight: 600;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            cursor: pointer;
-            background: linear-gradient(135deg, #27ae60 0%, #1e8449 100%);
-            color: #fff;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 6px;
-            white-space: nowrap;
-        `
     };
 
     // === СЕЛЕКТОРЫ ДЛЯ ПОИСКА ЭЛЕМЕНТОВ ===
@@ -227,8 +246,8 @@
     // Кэш результатов для оптимизации — обновляем DOM только при изменении
     const lobbyResultCache = new WeakMap();
     let lastMainPartyResultKey = '';
-    const RENDER_POLL_MS = 150;        // Интервал агрессивного опроса когда блок не отрисован (мс)
-    const RENDER_POLL_MAX_MS = 30000;  // Макс. время опроса (30 сек)
+    const RENDER_POLL_MS = CONFIG.RENDER.AGGRESSIVE_POLL_MS;
+    const RENDER_POLL_MAX_MS = CONFIG.RENDER.AGGRESSIVE_POLL_MAX_MS;
     let matchmakingRetryCount = 0;
     let lobbyRetryCount = 0;
     let aggressivePollingId = null;
@@ -236,8 +255,7 @@
     // Состояние и управление клубной кнопкой поиска матча
     let isClubMatchSearching = false;
     let isClubMatchRequestInFlight = false;
-    let lastQueueStateCheckTime = 0;
-    const QUEUE_STATE_CHECK_INTERVAL_MS = 7000; // не слишком часто, чтобы не спамить API
+    let clubMatchStatus = 'idle'; // 'idle' | 'searching' | 'in_match'
 
     // Запросить разрешение на браузерные уведомления (нужно для показа уведомлений при большой разнице эло)
     function requestNotificationPermissionIfNeeded() {
@@ -746,6 +764,7 @@
             stopAggressivePolling();
         }
         updateDisplay();
+        updateClubMatchStatusFromDom();
         if (CONFIG.SHOW_LOBBY_ELO_BLOCKS && !path.includes('/matchmaking')) {
             updateLobbyDisplays();
         }
@@ -756,43 +775,72 @@
 
     // === API ДЛЯ ЗАПУСКА/ОСТАНОВКИ МАТЧМЕЙКИНГА (ИСПОЛЬЗУЕТСЯ КНОПКОЙ В КЛУБЕ) ===
 
+    function updateAllClubButtonsUI() {
+        const buttons = document.querySelectorAll('.faceit-club-matchmaking-button');
+        buttons.forEach(btn => {
+            try {
+                if (!btn || !btn.isConnected) return;
+                btn.textContent = getClubButtonText();
+                btn.disabled =
+                    isClubMatchRequestInFlight ||
+                    (clubMatchStatus === 'in_match' && CONFIG.MATCHMAKING_BUTTON.DISABLE_WHEN_IN_MATCH);
+                applyClubButtonStyles(btn);
+            } catch (e) {}
+        });
+    }
+
+    function updateClubMatchStatusFromDom() {
+        if (!CONFIG.MATCHMAKING_BUTTON.DOM_STATUS_ENABLED) return;
+        try {
+            const navBtn = document.querySelector(`button[aria-label="${CONFIG.MATCHMAKING_BUTTON.MATCHES_NAV_ARIA_LABEL}"]`);
+            if (!navBtn) return;
+
+            const hasIndicator =
+                !!navBtn.querySelector('[class*="MatchStatusIndicatorWrapper"]') ||
+                !!navBtn.querySelector('[class*="MatchStatusIndicatorAnimation"]');
+
+            if (!hasIndicator) {
+                clubMatchStatus = 'idle';
+                isClubMatchSearching = false;
+                return;
+            }
+
+            // При поиске обычно показывается таймер "MM:SS". В матче может быть другой бейдж/иконка.
+            const notif = navBtn.querySelector('[class*="Notification"]');
+            const notifText = (notif && (notif.textContent || '').trim()) || '';
+            const isTimer = /^\d{2}:\d{2}$/.test(notifText);
+
+            clubMatchStatus = isTimer ? 'searching' : 'in_match';
+            isClubMatchSearching = true;
+        } finally {
+            updateAllClubButtonsUI();
+        }
+    }
+
     function getClubButtonText() {
-        return isClubMatchSearching ? MATCHMAKING_CONTROL.BUTTON_TEXT_STOP : MATCHMAKING_CONTROL.BUTTON_TEXT_START;
+        if (clubMatchStatus === 'in_match' && CONFIG.MATCHMAKING_BUTTON.DISABLE_WHEN_IN_MATCH) {
+            return CONFIG.MATCHMAKING_BUTTON.TEXT_IN_MATCH;
+        }
+        return isClubMatchSearching ? CONFIG.MATCHMAKING_BUTTON.TEXT_STOP : CONFIG.MATCHMAKING_BUTTON.TEXT_START;
     }
 
     function applyClubButtonStyles(button) {
         const css = isClubMatchSearching
-            ? MATCHMAKING_CONTROL.BUTTON_STYLES_SEARCHING
-            : MATCHMAKING_CONTROL.BUTTON_STYLES;
+            ? CONFIG.MATCHMAKING_BUTTON.STYLES_SEARCHING
+            : CONFIG.MATCHMAKING_BUTTON.STYLES_IDLE;
         button.style.cssText = css;
     }
 
-    async function fetchMatchmakingData() {
-        const url = `https://www.faceit.com/api/matchmaking-bff/v1/users/${MATCHMAKING_CONTROL.USER_ID}/games/cs2/regions/EU/matchmakings`;
-        const res = await fetch(url, { credentials: 'include' });
-        if (!res.ok) return null;
-        const data = await res.json().catch(() => null);
-        const party = data && data.payload && data.payload.party;
-        if (!party || !party.id || !Array.isArray(party.members) || party.members.length === 0) return null;
-        return { partyId: party.id, userIds: party.members };
-    }
-
     async function startMatchmakingFromClub() {
-        const mmData = await fetchMatchmakingData();
-        if (!mmData) {
-            alert('Не удалось получить данные пати. Перейди на страницу matchmaking и попробуй снова.');
-            throw new Error('No party data');
-        }
-
         const body = {
             entityType: 'matchmaking',
-            entityId: MATCHMAKING_CONTROL.ENTITY_ID,
-            leaderId: MATCHMAKING_CONTROL.USER_ID,
-            playerId: mmData.partyId,
+            entityId: CONFIG.MATCHMAKING_BUTTON.ENTITY_ID,
+            leaderId: CONFIG.MATCHMAKING_BUTTON.USER_ID,
+            playerId: CONFIG.MATCHMAKING_BUTTON.PARTY_ID,
             playerType: 'party',
-            userIds: mmData.userIds,
+            userIds: CONFIG.MATCHMAKING_BUTTON.PARTY_USER_IDS,
             selection: {},
-            serverPings: MATCHMAKING_CONTROL.SERVER_PINGS
+            serverPings: CONFIG.MATCHMAKING_BUTTON.SERVER_PINGS
         };
 
         const res = await fetch('https://www.faceit.com/api/queue/v2/player', {
@@ -811,7 +859,19 @@
             try {
                 const json = JSON.parse(text);
                 const payload = json && json.payload;
-                const m = (payload && payload.message) || (json && json.message);
+                let m = (payload && payload.message) || (json && json.message);
+
+                // Если в payload.data пришёл список игроков без античита — показываем ники
+                if (payload && Array.isArray(payload.data) && payload.data.length > 0) {
+                    const names = payload.data
+                        .map(d => d && (d.nickname || d.userId))
+                        .filter(Boolean);
+                    if (names.length) {
+                        const base = m || 'Faceit Anticheat is required';
+                        m = base + '\n\nНужно запустить Anti-Cheat у:\n' + names.map(n => `- ${n}`).join('\n');
+                    }
+                }
+
                 if (m) msg = m;
             } catch (e) {}
 
@@ -823,7 +883,7 @@
     }
 
     async function stopMatchmakingFromClub() {
-        const url = `https://www.faceit.com/api/queue/v2/player/matchmaking/${MATCHMAKING_CONTROL.ENTITY_ID}/${MATCHMAKING_CONTROL.USER_ID}`;
+        const url = `https://www.faceit.com/api/queue/v2/player/matchmaking/${CONFIG.MATCHMAKING_BUTTON.ENTITY_ID}/${CONFIG.MATCHMAKING_BUTTON.USER_ID}`;
         const res = await fetch(url, {
             method: 'DELETE',
             credentials: 'include',
@@ -837,28 +897,6 @@
         }
     }
 
-    async function fetchQueueStateOnce() {
-        if (!MATCHMAKING_CONTROL.USER_ID) return;
-        const now = Date.now();
-        if (now - lastQueueStateCheckTime < QUEUE_STATE_CHECK_INTERVAL_MS) return;
-        lastQueueStateCheckTime = now;
-
-        try {
-            const url = `https://www.faceit.com/api/queue/v2/player/user/${MATCHMAKING_CONTROL.USER_ID}`;
-            const res = await fetch(url, { credentials: 'include' });
-            if (!res.ok) return;
-            const data = await res.json().catch(() => null);
-            if (!data || !data.payload) return;
-
-            const payload = data.payload;
-            const queues = payload.queues || payload.activeQueues || [];
-            const hasQueues = Array.isArray(queues) && queues.length > 0;
-            isClubMatchSearching = !!hasQueues;
-        } catch (e) {
-            // Тихо игнорируем сетевые ошибки
-        }
-    }
-
     function handleClubButtonClick(event) {
         event.preventDefault();
         event.stopPropagation();
@@ -868,11 +906,23 @@
         isClubMatchRequestInFlight = true;
         button.disabled = true;
 
-        const action = isClubMatchSearching ? stopMatchmakingFromClub : startMatchmakingFromClub;
+        // Перед кликом обновляем статус из DOM (без API), чтобы кнопка не “ошибалась” действием.
+        updateClubMatchStatusFromDom();
+        if (clubMatchStatus === 'in_match' && CONFIG.MATCHMAKING_BUTTON.DISABLE_WHEN_IN_MATCH) {
+            isClubMatchRequestInFlight = false;
+            button.disabled = false;
+            updateAllClubButtonsUI();
+            return;
+        }
+
+        // Никаких лишних запросов: отправляем только start/stop.
+        // Shift+Click = принудительный Stop (если состояние рассинхронизировалось).
+        const forceStop = !!event.shiftKey;
+        const action = forceStop || isClubMatchSearching ? stopMatchmakingFromClub : startMatchmakingFromClub;
 
         action()
             .then(() => {
-                isClubMatchSearching = !isClubMatchSearching;
+                isClubMatchSearching = forceStop ? false : !isClubMatchSearching;
             })
             .catch(() => {
                 // Ошибку уже залогировали выше
@@ -880,27 +930,26 @@
             .finally(() => {
                 button.disabled = false;
                 isClubMatchRequestInFlight = false;
-                button.textContent = getClubButtonText();
-                applyClubButtonStyles(button);
+                updateAllClubButtonsUI();
             });
     }
 
     function attachClubMatchmakingButton(container) {
         try {
-            if (!MATCHMAKING_CONTROL.ENABLE_CLUB_BUTTON) return;
-            if (!MATCHMAKING_CONTROL.LOBBY_OWNER_NICKNAME) return;
-
-            // Добавляем кнопку только в то лобби, где название/ник совпадает с нашим
-            let hasOwner = false;
-            const all = container.querySelectorAll('*');
-            for (const el of all) {
-                const text = (el.textContent || '').trim();
-                if (text === MATCHMAKING_CONTROL.LOBBY_OWNER_NICKNAME) {
-                    hasOwner = true;
-                    break;
+            if (!CONFIG.MATCHMAKING_BUTTON.ENABLED) return;
+            // При необходимости можно ограничить кнопку только лобби, где в тексте есть ник капитана
+            if (CONFIG.MATCHMAKING_BUTTON.LIMIT_TO_OWNER_LOBBY && CONFIG.MATCHMAKING_BUTTON.LOBBY_OWNER_NICKNAME) {
+                let hasOwner = false;
+                const all = container.querySelectorAll('*');
+                for (const el of all) {
+                    const text = (el.textContent || '').trim();
+                    if (text === CONFIG.MATCHMAKING_BUTTON.LOBBY_OWNER_NICKNAME) {
+                        hasOwner = true;
+                        break;
+                    }
                 }
+                if (!hasOwner) return;
             }
-            if (!hasOwner) return;
 
             // Вставляем кнопку внутрь нашего основного блока со средним ELO
             const infoElement = container.querySelector('.faceit-lobby-average-elo');
@@ -928,10 +977,11 @@
                 } else {
                     infoElement.appendChild(button);
                 }
+                updateAllClubButtonsUI();
+
             } else {
                 // Обновляем текст/стили если состояние поменялось
-                button.textContent = getClubButtonText();
-                applyClubButtonStyles(button);
+                updateAllClubButtonsUI();
                 button.style.marginTop = '4px';
                 button.style.width = '100%';
                 button.style.justifyContent = 'center';
@@ -1009,10 +1059,6 @@
             stopAggressivePolling();
 
             lobbyContainers.forEach(container => {
-                // Обновляем состояние очереди (не чаще, чем раз в N секунд),
-                // чтобы текст кнопки соответствовал реальному статусу
-                fetchQueueStateOnce();
-
                 const playerCards = findPlayerCards(container);
                 const result = calculateAverageEloForCards(playerCards);
                 const cacheKey = result ? `${result.average}-${result.count}-${result.eloDiff}` : 'n';
